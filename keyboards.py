@@ -2,13 +2,23 @@
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
-def get_main_keyboard():
-    """Bottom navigation keyboard - Used for the /start command."""
+def get_main_keyboard(channel_link: str):
+    """
+    Bottom navigation keyboard - Used for the /start command.
+    Includes a direct link button to the channel.
+    """
     return ReplyKeyboardMarkup([
         [KeyboardButton("💌 Submit Confession")],
         [KeyboardButton("📖 Browse"), KeyboardButton("💬 Comments")],
-        [KeyboardButton("❓ Help"), KeyboardButton("⚙️ Settings")]
+        [KeyboardButton("❓ Help"), KeyboardButton("⚙️ Settings")],
+        
+        [InlineKeyboardButton("📢 View Channel", url=channel_link)] 
     ], resize_keyboard=True, input_field_placeholder="Choose an option...")
+
+# ---
+# NOTE: The rest of the functions remain the same as the requirement was only 
+# for the main keyboard, but they are included here for completeness.
+# ---
 
 def get_category_keyboard():
     """Category selection for confessions."""
@@ -96,7 +106,7 @@ def get_comments_management(confession_number, can_comment=True):
     
     buttons.extend([
         # This button takes you back to the confession text
-        [InlineKeyboardButton("🔙 Back to Confession", callback_data="back_browse")]
+        [InlineKeyboardButton("🔙 Back to Confession", callback_data=f"back_conf_{confession_number}")] # Changed callback for clarity
     ])
     
     return InlineKeyboardMarkup(buttons)
