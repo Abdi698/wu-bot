@@ -25,8 +25,8 @@ from telegram.ext import (
     ConversationHandler
 )
 
-# Import all keyboard functions from the provided keyboards.py
-# NOTE: This line requires the keyboards.py file to exist in the same directory.
+# NOTE: This code assumes you have a 'keyboards.py' file 
+# defining the keyboard functions (get_main_keyboard, get_admin_keyboard, etc.).
 from keyboards import (
     get_main_keyboard,
     get_category_keyboard,
@@ -46,7 +46,7 @@ try:
     CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 except (TypeError, ValueError):
     CHANNEL_ID = os.getenv("CHANNEL_ID")
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/wu_confession")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/telegram")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS")
@@ -208,7 +208,7 @@ db = DatabaseManager()
 def escape_markdown_v2(text: str) -> str:
     """Escapes special characters in MarkdownV2 text not intended for formatting."""
     # List of characters that must be escaped in MarkdownV2
-    # The order matters: escape the backslash first!
+    # NOTE: The order matters: escape the backslash first!
     escape_chars = r'_*`[\]()~>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
@@ -221,10 +221,11 @@ def format_confession_for_post(confession_id: int, category: str, text: str, com
     # CRITICAL FIX: Escape the user's text before placing it inside the italic tags
     escaped_text = escape_markdown_v2(text)
 
+    # Use double backslashes to escape the static formatting characters in the template text
     return (
         f"🤫 \\*\\*Confession \\#{confession_id}\\*\\*\n"
         f"Category: \\#{category_tag}\n\n"
-        f"\\_{escaped_text}\\_\n\n" # The actual text is wrapped in \_ tags
+        f"\\_{escaped_text}\\_\n\n" # The user text is wrapped in \_ tags for italics
         f"💬 Comments: {comment_count}"
     )
 
@@ -239,13 +240,11 @@ def format_browsing_confession(confession_id: int, text: str, category: str, tim
         
     comment_count = db.get_comment_count(confession_id)
     
-    # We don't use escape_markdown_v2 here because the client is Telegram's Python library, 
-    # which generally handles basic Markdown formatting inside *private* chats better. 
-    # However, let's use the safer MarkdownV2 escaping and instruct the bot to use it.
+    # Use MarkdownV2 escaping for the user content
     escaped_text = escape_markdown_v2(text)
 
     return (
-        f"📝 \\*\\*Confession \\#{confession_id}\\*\\* ({index + 1}/{total})\n"
+        f"📝 \\*\\*Confession \\#{confession_id}\\*\\* \\({index + 1}/{total}\\)\n" # Escaped parentheses
         f"Category: \\*{category}\\* \\- Shared {date_str}\n\n"
         f"{escaped_text}\n\n"
         f"💬 Comments: {comment_count}"
@@ -253,7 +252,7 @@ def format_browsing_confession(confession_id: int, text: str, category: str, tim
 
 def format_comments_display(confession_id: int, comments: List[Tuple]) -> str:
     """Formats the list of comments for display in private chat."""
-    header = f"💬 \\*\\*Comments for Confession \\#{confession_id}\\*\\* ({len(comments)} total)\n\n"
+    header = f"💬 \\*\\*Comments for Confession \\#{confession_id}\\*\\* \\({len(comments)} total\\)\n\n"
     
     if not comments:
         return header + "No comments yet\\! Be the first to add one\\."
@@ -270,7 +269,7 @@ def format_comments_display(confession_id: int, comments: List[Tuple]) -> str:
         escaped_comment_text = escape_markdown_v2(text)
             
         comment_block = (
-            f"👤 \\*Anon User {i + 1}\\* ({time_str}):\n"
+            f"👤 \\*Anon User {i + 1}\\* \\({time_str}\\):\n"
             f"» {escaped_comment_text}"
         )
         comment_blocks.append(comment_block)
@@ -340,7 +339,27 @@ async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("ℹ️ To read or add comments, please use the \\*\\*📖 Browse\\*\\* button, find a confession, and then use the \\*View/Add Comment\\* inline buttons\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     elif text == "❓ Help":
-        await update.message.reply_text("❓ \\*\\*Bot Help\\*\\*\\n\\nUse \\*\\*Submit Confession\\*\\* to write a post\\. Use \\*\\*Browse\\*\\* to view and interact with approved posts\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
+        # FULL USER MANUAL
+        help_manual = (
+            "📖 \\*\\*Confession Bot Manual\\*\\*\n\n"
+            "**1\\. Submit Confession:**\n"
+            "  \\- Tap the button, choose a category, and write your anonymous post\\.\n"
+            "  \\- Posts are sent to admins for review and approval\\.\n\n"
+            "**2\\. Browse:**\n"
+            "  \\- View all *approved* confessions by category or chronologically\\.\n"
+            "  \\- Use the **\\< Prev** and **Next \\>** buttons to navigate\\.\n\n"
+            "**3\\. Comments:**\n"
+            "  \\- Use the **View/Add Comment** button while browsing a confession\\.\n"
+            "  \\- Your comments are also anonymous\\.\n"
+            "  \\- Adding a comment automatically updates the comment count on the channel post\\.\n\n"
+            "**4\\. Settings:**\n"
+            "  \\- Manage simple bot settings \\(e\\.g\\., toggle notifications\\)\\.\n\n"
+            "Type /start to return to the main keyboard\\."
+        )
+        await update.message.reply_text(
+            help_manual, 
+            parse_mode=constants.ParseMode.MARKDOWN_V2
+        )
         return ConversationHandler.END
     elif text == "⚙️ Settings":
         await update.message.reply_text("⚙️ \\*\\*Settings Menu\\*\\*", reply_markup=get_settings_keyboard(), parse_mode=constants.ParseMode.MARKDOWN_V2)
@@ -380,10 +399,11 @@ async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     category = CATEGORY_MAP.get(key, 'Other')
     context.user_data['category'] = category
     
+    # FIX: Escaping the parentheses in the static text to prevent BadRequest
     await query.edit_message_text(
         f"✅ \\*\\*Category:\\*\\* {category}\n\n"
-        "📝 \\*\\*Now write your confession:\\*\\*\n\n"
-        "Type your confession (10\\-1000 characters):",
+        "📝 \\*\\*Now write your confession:\\*\\*\\n\\n"
+        "Type your confession \\(10\\-1000 characters\\):",
         parse_mode=constants.ParseMode.MARKDOWN_V2
     )
     
@@ -392,6 +412,7 @@ async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive confession text, save to DB, and send admin link."""
     user_id = update.effective_user.id
+    # Escape username just in case it contains Markdown characters
     username = escape_markdown_v2(update.effective_user.first_name or "Anonymous")
     confession_text = update.message.text.strip()
     category = context.user_data.get('category', 'General')
@@ -410,9 +431,10 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     # Notify Admin
+    # Escape confession_text before sending to admin via MarkdownV2
     admin_message = (
         f"🆕 \\*\\*Confession \\#{confession_id} PENDING\\*\\*\n\n"
-        f"👤 User: {username} (ID: `{user_id}`)\n"
+        f"👤 User: {username} \\(ID: `{user_id}`\\)\n"
         f"📂 Category: {category}\n"
         f"📝 Text:\n\\_{escape_markdown_v2(confession_text)}\\_"
     )
@@ -459,7 +481,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     if action == 'approve':
         try:
             comment_count = db.get_comment_count(confession_id)
-            # The fixed function now handles escaping
+            # Use the fixed function that escapes user text for channel posting
             channel_text = format_confession_for_post(confession_id, category, confession_text, comment_count)
             
             channel_message = await context.bot.send_message(
@@ -475,7 +497,12 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
             
         except Exception as e:
             logger.error(f"Failed to post to channel: {e}")
-            await query.answer("❌ Failed to post to channel\\. Check bot permissions and CHANNEL_ID\\.", show_alert=True)
+            # Edit the admin's message to show failure status
+            await query.edit_message_text(
+                f"❌ \\*\\*Confession \\#{confession_id} FAILED TO APPROVE\\*\\*\\.\n\n"
+                f"Error: {escape_markdown_v2(str(e))}\nCheck bot permissions and CHANNEL\_ID\\.",
+                parse_mode=constants.ParseMode.MARKDOWN_V2
+            )
             return
             
     elif action == 'reject':
@@ -509,7 +536,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def review_pending_confessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to list pending confessions for review."""
     if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        await update.message.reply_text("🚫 You are not authorized to use this command\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return
 
     pending_confessions = db.get_pending_confessions()
@@ -518,7 +545,7 @@ async def review_pending_confessions(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text("✅ No pending confessions to review\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return
 
-    await update.message.reply_text(f"📝 **Found {len(pending_confessions)} Pending Confessions:**", parse_mode=constants.ParseMode.MARKDOWN_V2)
+    await update.message.reply_text(f"📝 \\*\\*Found {len(pending_confessions)} Pending Confessions:\\*\\*", parse_mode=constants.ParseMode.MARKDOWN_V2)
 
     for c_id, user_id, category, text, timestamp in pending_confessions:
         try:
@@ -528,7 +555,7 @@ async def review_pending_confessions(update: Update, context: ContextTypes.DEFAU
             date_str = "Unknown time"
 
         message = (
-            f"\\*\\*Confession \\#{c_id}\\*\\* (Submitted {date_str})\n"
+            f"\\*\\*Confession \\#{c_id}\\*\\* \\(Submitted {date_str}\\)\n"
             f"👤 User ID: `{user_id}`\n"
             f"📂 Category: {category}\n"
             f"📝 Preview:\n\\_{escape_markdown_v2(text[:100] + '...' if len(text) > 100 else text)}\\_"
@@ -541,7 +568,31 @@ async def review_pending_confessions(update: Update, context: ContextTypes.DEFAU
             disable_web_page_preview=True
         )
 
-# --- Remaining Handlers (Modified for V2 Parsing) ---
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Provides a manual for admin commands and processes."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 Unauthorized command\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
+        return
+
+    admin_manual = (
+        "👑 \\*\\*Admin Manual & Review Process\\*\\*\n\n"
+        "**1\\. Review Pending Confessions:**\n"
+        "  \\- Use the command: `/review`\n"
+        "  \\- The bot will list all pending posts, each with inline buttons:\n"
+        "    \\- **✅ Approve:** Posts the confession to the channel and notifies the user\\.\n"
+        "    \\- **❌ Reject:** Discards the post and notifies the user\\.\n"
+        "    \\- **⏸️ Pending:** Allows you to change a post back to pending status\\.\n\n"
+        "**2\\. Error Handling:**\n"
+        "  \\- If Approval fails with a \\*parsing error\\*, the user likely included unescaped Markdown in their post\\. You must manually adjust the database entry or reject the post\\.\n"
+        "  \\- If the bot is unresponsive, check the hosting logs for \\*Conflict errors\\* \\(multiple instances running\\)\\."
+    )
+    
+    await update.message.reply_text(
+        admin_manual, 
+        parse_mode=constants.ParseMode.MARKDOWN_V2
+    )
+
+# --- Remaining Handlers (Browsing/Comments) ---
 
 async def browse_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows the browsing category menu."""
@@ -715,7 +766,7 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not (1 <= len(comment_text) <= 500):
         await update.message.reply_text(
             "❌ \\*\\*Comment must be between 1 and 500 characters\\.\\*\\*\\n\\n"
-            "Try again (or /cancel):",
+            "Try again \\(/cancel\\):",
             parse_mode=constants.ParseMode.MARKDOWN_V2
         )
         context.user_data['comment_confession_id'] = confession_id 
@@ -834,7 +885,8 @@ def main():
 
     # --- Handlers ---
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("review", review_pending_confessions)) # New admin review command
+    app.add_handler(CommandHandler("review", review_pending_confessions)) # Admin review command
+    app.add_handler(CommandHandler("adminhelp", admin_help)) # Admin help manual
     app.add_handler(confession_conv_handler)
     app.add_handler(comment_conv_handler)
     app.add_handler(browsing_conv_handler)
