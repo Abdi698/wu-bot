@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 from typing import List, Tuple, Optional, Dict
+import re # Import the regular expression module
 
 # Telegram Imports
 from telegram import (
@@ -41,13 +42,12 @@ from keyboards import (
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Get Channel ID (as int) and Channel Link for keyboard
 try:
     CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 except (TypeError, ValueError):
     CHANNEL_ID = os.getenv("CHANNEL_ID")
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/telegram") # Default link
-BOT_USERNAME = os.getenv("BOT_USERNAME") # Required for deep linking
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/telegram")
+BOT_USERNAME = os.getenv("BOT_USERNAME")
 
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS")
 ADMIN_IDS: List[int] = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",")] if ADMIN_IDS_RAW else []
@@ -66,7 +66,7 @@ CATEGORY_MAP: Dict[str, str] = {
     "relationship": "💕 Love", "friendship": "👥 Friends", 
     "campus": "🎓 Campus", "general": "😊 General", 
     "vent": "😢 Vent", "secret": "🤫 Secret", 
-    "recent": "🆕 Latest" # 'recent' is a virtual category for browsing
+    "recent": "🆕 Latest"
 }
 
 # --- Database Manager Class ---
@@ -84,7 +84,7 @@ class DatabaseManager:
         c.execute("""CREATE TABLE IF NOT EXISTS confessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                category TEXT,             -- NEW: Added category column
+                category TEXT,
                 text TEXT,
                 approved INTEGER DEFAULT 0,  -- 0: Pending, 1: Approved, 2: Rejected
                 channel_message_id INTEGER,
@@ -123,6 +123,17 @@ class DatabaseManager:
         row = c.fetchone()
         conn.close()
         return row
+        
+    def get_pending_confessions(self) -> List[Tuple]:
+        """Returns list of pending confessions (id, user_id, category, text, timestamp)."""
+        conn = self._get_conn()
+        c = conn.cursor()
+        # Select key columns for review display: id, user_id, category, text, timestamp
+        c.execute("SELECT id, user_id, category, text, timestamp FROM confessions WHERE approved=0 ORDER BY timestamp ASC")
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
 
     def get_approved_confessions(self, category_key: str = 'recent') -> List[Tuple]:
         """Returns list of (id, text, category, timestamp) for browsing."""
@@ -136,7 +147,7 @@ class DatabaseManager:
             if category_name:
                  c.execute("SELECT id, text, category, timestamp FROM confessions WHERE approved=1 AND category=? ORDER BY timestamp DESC", (category_name,))
             else:
-                return [] # Invalid category key
+                return [] 
 
         rows = c.fetchall()
         conn.close()
@@ -155,14 +166,22 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-    def save_comment(self, confession_id: int, user_id: int, text: str):
+    def save_comment(self, confession_id: int, user_id: int, text: str) -> Optional[int]:
+        """Saves comment and returns comment ID."""
         conn = self._get_conn()
         c = conn.cursor()
         timestamp = datetime.now().isoformat()
-        c.execute("INSERT INTO comments (confession_id, user_id, text, timestamp) VALUES (?, ?, ?, ?)",
-                  (confession_id, user_id, text, timestamp))
-        conn.commit()
-        conn.close()
+        try:
+            c.execute("INSERT INTO comments (confession_id, user_id, text, timestamp) VALUES (?, ?, ?, ?)",
+                    (confession_id, user_id, text, timestamp))
+            conn.commit()
+            return c.lastrowid
+        except Exception as e:
+            logger.error(f"Error saving comment: {e}")
+            return None
+        finally:
+            conn.close()
+
 
     def get_comments(self, confession_id: int) -> List[Tuple]:
         """Returns list of (timestamp, text, user_id) for a confession."""
@@ -186,12 +205,26 @@ db = DatabaseManager()
 
 # --- Helper Formatting Functions ---
 
+def escape_markdown_v2(text: str) -> str:
+    """Escapes special characters in MarkdownV2 text not intended for formatting."""
+    # List of characters that must be escaped in MarkdownV2
+    # The order matters: escape the backslash first!
+    escape_chars = r'_*`[\]()~>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
 def format_confession_for_post(confession_id: int, category: str, text: str, comment_count: int) -> str:
-    """Formats the text for the channel post."""
+    """Formats the text for the channel post, escaping user text."""
+    # Clean up category text for hashtag
+    category_tag = category.replace('💕', '').replace('👥', '').replace('🎓', '').replace('😊', '').replace('😢', '').replace('🤫', '').strip()
+    category_tag = category_tag.replace(' ', '_').replace(':', '')
+    
+    # CRITICAL FIX: Escape the user's text before placing it inside the italic tags
+    escaped_text = escape_markdown_v2(text)
+
     return (
-        f"🤫 **Confession #{confession_id}**\n"
-        f"Category: #{category.replace(' ', '_').replace(':', '')}\n\n"
-        f"_{text}_\n\n"
+        f"🤫 \\*\\*Confession \\#{confession_id}\\*\\*\n"
+        f"Category: \\#{category_tag}\n\n"
+        f"\\_{escaped_text}\\_\n\n" # The actual text is wrapped in \_ tags
         f"💬 Comments: {comment_count}"
     )
 
@@ -206,19 +239,24 @@ def format_browsing_confession(confession_id: int, text: str, category: str, tim
         
     comment_count = db.get_comment_count(confession_id)
     
+    # We don't use escape_markdown_v2 here because the client is Telegram's Python library, 
+    # which generally handles basic Markdown formatting inside *private* chats better. 
+    # However, let's use the safer MarkdownV2 escaping and instruct the bot to use it.
+    escaped_text = escape_markdown_v2(text)
+
     return (
-        f"📝 **Confession #{confession_id}** ({index + 1}/{total})\n"
-        f"Category: *{category}* - Shared {date_str}\n\n"
-        f"{text}\n\n"
+        f"📝 \\*\\*Confession \\#{confession_id}\\*\\* ({index + 1}/{total})\n"
+        f"Category: \\*{category}\\* \\- Shared {date_str}\n\n"
+        f"{escaped_text}\n\n"
         f"💬 Comments: {comment_count}"
     )
 
 def format_comments_display(confession_id: int, comments: List[Tuple]) -> str:
     """Formats the list of comments for display in private chat."""
-    header = f"💬 **Comments for Confession #{confession_id}** ({len(comments)} total)\n\n"
+    header = f"💬 \\*\\*Comments for Confession \\#{confession_id}\\*\\* ({len(comments)} total)\n\n"
     
     if not comments:
-        return header + "No comments yet! Be the first to add one."
+        return header + "No comments yet\\! Be the first to add one\\."
 
     comment_blocks = []
     for i, (timestamp, text, _) in enumerate(comments):
@@ -228,13 +266,16 @@ def format_comments_display(confession_id: int, comments: List[Tuple]) -> str:
         except ValueError:
             time_str = "just now"
             
+        # Escape comment text
+        escaped_comment_text = escape_markdown_v2(text)
+            
         comment_block = (
-            f"👤 *Anon User {i + 1}* ({time_str}):\n"
-            f"» {text}"
+            f"👤 \\*Anon User {i + 1}\\* ({time_str}):\n"
+            f"» {escaped_comment_text}"
         )
         comment_blocks.append(comment_block)
         
-    return header + "\n---\n".join(comment_blocks)
+    return header + "\n\\-\\-\\-\\n".join(comment_blocks)
 
 # --- Handler Functions: Core Bot Logic ---
 
@@ -242,19 +283,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles /start command, including deep links for browsing."""
     
     if context.args and context.args[0].startswith('viewconf_'):
-        # Handle deep link from channel post
         return await handle_deep_link(update, context)
         
     welcome_text = (
-        "🤫 **Confession Bot**\n\n"
-        "Welcome! Use the menu to submit a confession, browse posts, or view the channel."
+        "🤫 \\*\\*Confession Bot\\*\\*\n\n"
+        "Welcome\\! Use the menu to submit a confession, browse posts, or view the channel\\."
     )
     
-    # Using ReplyKeyboardMarkup for the main menu (defined in keyboards.py)
     await update.message.reply_text(
         welcome_text,
         reply_markup=get_main_keyboard(CHANNEL_LINK),
-        parse_mode=constants.ParseMode.MARKDOWN
+        parse_mode=constants.ParseMode.MARKDOWN_V2 # Use V2 for safety
     )
     return ConversationHandler.END
 
@@ -265,31 +304,29 @@ async def handle_deep_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         confession_id = int(payload.split('_')[1])
     except (IndexError, ValueError):
-        await update.message.reply_text("❌ Invalid confession link.", reply_markup=get_main_keyboard(CHANNEL_LINK))
+        await update.message.reply_text("❌ Invalid confession link\\.", reply_markup=get_main_keyboard(CHANNEL_LINK), parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     confession_full = db.get_confession(confession_id)
     
-    if not confession_full or confession_full[4] != 1: # Index 4 is 'approved' status (1=approved)
-        await update.message.reply_text("❌ Sorry, that confession is not approved or does not exist.", reply_markup=get_main_keyboard(CHANNEL_LINK))
+    if not confession_full or confession_full[4] != 1:
+        await update.message.reply_text("❌ Sorry, that confession is not approved or does not exist\\.", reply_markup=get_main_keyboard(CHANNEL_LINK), parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
-    # Data is (id, text, category, timestamp)
+    # (id, text, category, timestamp)
     confession_data = (confession_full[0], confession_full[3], confession_full[2], confession_full[6])
     
-    # Temporarily store this single confession as the list for browsing
     context.user_data['confessions_list'] = [confession_data]
     context.user_data['current_index'] = 0
     
-    # Send a new message with the formatted confession and navigation
     await update.message.reply_text(
         "You were redirected from the channel post:",
-        parse_mode=constants.ParseMode.MARKDOWN
+        parse_mode=constants.ParseMode.MARKDOWN_V2
     )
     
     await display_confession(update, context, via_callback=False)
     
-    return BROWSING_CONFESSIONS # Enter browsing state
+    return BROWSING_CONFESSIONS
 
 async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles text button clicks from the ReplyKeyboardMarkup."""
@@ -300,13 +337,13 @@ async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif text == "📖 Browse":
         return await browse_menu(update, context)
     elif text == "💬 Comments":
-        await update.message.reply_text("ℹ️ To read or add comments, please use the **📖 Browse** button, find a confession, and then use the *View/Add Comment* inline buttons.", parse_mode=constants.ParseMode.MARKDOWN)
+        await update.message.reply_text("ℹ️ To read or add comments, please use the \\*\\*📖 Browse\\*\\* button, find a confession, and then use the \\*View/Add Comment\\* inline buttons\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     elif text == "❓ Help":
-        await update.message.reply_text("❓ **Bot Help**\n\nUse **Submit Confession** to write a post. Use **Browse** to view and interact with approved posts.", parse_mode=constants.ParseMode.MARKDOWN)
+        await update.message.reply_text("❓ \\*\\*Bot Help\\*\\*\\n\\nUse \\*\\*Submit Confession\\*\\* to write a post\\. Use \\*\\*Browse\\*\\* to view and interact with approved posts\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     elif text == "⚙️ Settings":
-        await update.message.reply_text("⚙️ **Settings Menu**", reply_markup=get_settings_keyboard(), parse_mode=constants.ParseMode.MARKDOWN)
+        await update.message.reply_text("⚙️ \\*\\*Settings Menu\\*\\*", reply_markup=get_settings_keyboard(), parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     
     return ConversationHandler.END
@@ -315,22 +352,23 @@ async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def start_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the confession process by prompting for category selection."""
+    context.user_data.clear()
+    
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         await query.edit_message_text(
-            "📂 **Select a category for your confession:**",
+            "📂 \\*\\*Select a category for your confession:\\*\\*",
             reply_markup=get_category_keyboard(),
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=constants.ParseMode.MARKDOWN_V2
         )
-    else: # Started via ReplyKeyboardMarkup text button
+    else: 
         await update.message.reply_text(
-            "📂 **Select a category for your confession:**",
+            "📂 \\*\\*Select a category for your confession:\\*\\*",
             reply_markup=get_category_keyboard(),
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=constants.ParseMode.MARKDOWN_V2
         )
     
-    context.user_data.clear()
     return SELECTING_CATEGORY
 
 async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -343,10 +381,10 @@ async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data['category'] = category
     
     await query.edit_message_text(
-        f"✅ **Category:** {category}\n\n"
-        "📝 **Now write your confession:**\n\n"
-        "Type your confession (10-1000 characters):",
-        parse_mode=constants.ParseMode.MARKDOWN
+        f"✅ \\*\\*Category:\\*\\* {category}\n\n"
+        "📝 \\*\\*Now write your confession:\\*\\*\n\n"
+        "Type your confession (10\\-1000 characters):",
+        parse_mode=constants.ParseMode.MARKDOWN_V2
     )
     
     return WRITING_CONFESSION
@@ -354,44 +392,44 @@ async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive confession text, save to DB, and send admin link."""
     user_id = update.effective_user.id
-    username = update.effective_user.first_name or "Anonymous"
+    username = escape_markdown_v2(update.effective_user.first_name or "Anonymous")
     confession_text = update.message.text.strip()
     category = context.user_data.get('category', 'General')
     
     if not (10 <= len(confession_text) <= 1000):
         await update.message.reply_text(
-            "❌ **Please ensure your confession is between 10 and 1000 characters.**\n\n"
+            "❌ \\*\\*Please ensure your confession is between 10 and 1000 characters\\.\\*\\*\n\n"
             "Try again:",
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=constants.ParseMode.MARKDOWN_V2
         )
         return WRITING_CONFESSION
     
     confession_id = db.save_confession(user_id, category, confession_text)
     if not confession_id:
-        await update.message.reply_text("❌ **Error submitting confession.** Please try again later.", parse_mode=constants.ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ \\*\\*Error submitting confession\\.\\*\\* Please try again later\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     # Notify Admin
+    admin_message = (
+        f"🆕 \\*\\*Confession \\#{confession_id} PENDING\\*\\*\n\n"
+        f"👤 User: {username} (ID: `{user_id}`)\n"
+        f"📂 Category: {category}\n"
+        f"📝 Text:\n\\_{escape_markdown_v2(confession_text)}\\_"
+    )
+    
     for admin_id in ADMIN_IDS:
-        admin_message = (
-            f"🆕 **Confession #{confession_id} PENDING**\n\n"
-            f"👤 User: {username} (ID: `{user_id}`)\n"
-            f"📂 Category: {category}\n"
-            f"📝 Text:\n_{confession_text}_"
-        )
-        
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
                 text=admin_message,
                 reply_markup=get_admin_keyboard(confession_id),
-                parse_mode=constants.ParseMode.MARKDOWN,
+                parse_mode=constants.ParseMode.MARKDOWN_V2,
                 disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"Failed to send admin message to {admin_id}: {e}")
     
-    await update.message.reply_text("✅ **Confession Submitted!** You'll be notified of the outcome.", parse_mode=constants.ParseMode.MARKDOWN)
+    await update.message.reply_text("✅ \\*\\*Confession Submitted\\!\\*\\* You'll be notified of the outcome\\.", parse_mode=constants.ParseMode.MARKDOWN_V2, reply_markup=get_main_keyboard(CHANNEL_LINK))
     
     context.user_data.clear()
     return ConversationHandler.END
@@ -402,7 +440,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     
     if query.from_user.id not in ADMIN_IDS: 
-        await query.answer("❌ Only admins can perform this action.", show_alert=True)
+        await query.answer("❌ Only admins can perform this action\\.", show_alert=True)
         return
     
     action, confession_id_str = query.data.split('_', 1) 
@@ -410,7 +448,7 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     confession = db.get_confession(confession_id)
     if not confession:
-        await query.edit_message_text(f"❌ Confession #{confession_id} not found.")
+        await query.edit_message_text(f"❌ Confession \\#{confession_id} not found\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
         return
     
     # 0:id, 1:user_id, 2:category, 3:text, 4:approved, 5:channel_message_id, 6:timestamp
@@ -421,76 +459,104 @@ async def handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     if action == 'approve':
         try:
             comment_count = db.get_comment_count(confession_id)
+            # The fixed function now handles escaping
             channel_text = format_confession_for_post(confession_id, category, confession_text, comment_count)
             
             channel_message = await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=channel_text,
                 reply_markup=get_channel_post_keyboard(confession_id, BOT_USERNAME), 
-                parse_mode=constants.ParseMode.MARKDOWN
+                parse_mode=constants.ParseMode.MARKDOWN_V2 # IMPORTANT: Use V2
             )
             
             db.update_confession_status(confession_id, 1, channel_message.message_id)
             status_code, status_text, status_emoji = 1, "APPROVED", "✅"
-            user_message = "🎉 **Your confession has been APPROVED and is live!**"
+            user_message = "🎉 \\*\\*Your confession has been APPROVED and is live\\!\\*\\*"
             
         except Exception as e:
             logger.error(f"Failed to post to channel: {e}")
-            await query.answer("❌ Failed to post to channel. Check bot permissions and CHANNEL_ID.", show_alert=True)
+            await query.answer("❌ Failed to post to channel\\. Check bot permissions and CHANNEL_ID\\.", show_alert=True)
             return
             
     elif action == 'reject':
         db.update_confession_status(confession_id, 2)
         status_code, status_text, status_emoji = 2, "REJECTED", "❌"
-        user_message = "❌ **Your confession was NOT APPROVED.**"
+        user_message = "❌ \\*\\*Your confession was NOT APPROVED\\.\\*\\*"
 
     elif action == 'pending':
         db.update_confession_status(confession_id, 0)
         status_code, status_text, status_emoji = 0, "SET BACK TO PENDING", "⏸️"
         
         return await query.edit_message_text(
-            f"{status_emoji} **Confession #{confession_id} {status_text}**.",
-            parse_mode=constants.ParseMode.MARKDOWN
+            f"{status_emoji} \\*\\*Confession \\#{confession_id} {status_text}\\*\\*\\.",
+            parse_mode=constants.ParseMode.MARKDOWN_V2
         )
 
     # Notify user (if approved/rejected)
     try:
         if user_message:
-            await context.bot.send_message(chat_id=user_id, text=user_message, parse_mode=constants.ParseMode.MARKDOWN)
+            await context.bot.send_message(chat_id=user_id, text=user_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.warning(f"Could not notify user {user_id}: {e}")
     
     # Update admin message
     await query.edit_message_text(
-        f"{status_emoji} **Confession #{confession_id} {status_text}**.\n\n"
-        f"Action performed by {query.from_user.first_name}.",
-        parse_mode=constants.ParseMode.MARKDOWN
+        f"{status_emoji} \\*\\*Confession \\#{confession_id} {status_text}\\*\\*\\.\n\n"
+        f"Action performed by {escape_markdown_v2(query.from_user.first_name)}\\.",
+        parse_mode=constants.ParseMode.MARKDOWN_V2
     )
+    
+async def review_pending_confessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to list pending confessions for review."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
 
-# --- Browsing Logic ---
+    pending_confessions = db.get_pending_confessions()
+    
+    if not pending_confessions:
+        await update.message.reply_text("✅ No pending confessions to review\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
+        return
+
+    await update.message.reply_text(f"📝 **Found {len(pending_confessions)} Pending Confessions:**", parse_mode=constants.ParseMode.MARKDOWN_V2)
+
+    for c_id, user_id, category, text, timestamp in pending_confessions:
+        try:
+            dt = datetime.fromisoformat(timestamp.split('.')[0])
+            date_str = dt.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            date_str = "Unknown time"
+
+        message = (
+            f"\\*\\*Confession \\#{c_id}\\*\\* (Submitted {date_str})\n"
+            f"👤 User ID: `{user_id}`\n"
+            f"📂 Category: {category}\n"
+            f"📝 Preview:\n\\_{escape_markdown_v2(text[:100] + '...' if len(text) > 100 else text)}\\_"
+        )
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=get_admin_keyboard(c_id),
+            parse_mode=constants.ParseMode.MARKDOWN_V2,
+            disable_web_page_preview=True
+        )
+
+# --- Remaining Handlers (Modified for V2 Parsing) ---
 
 async def browse_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows the browsing category menu."""
+    text = "📚 \\*\\*Browse Confessions by Category:\\*\\* \\n\\nSelect a category:"
+    
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-        # The 'back_browse' handler will hit this
         try:
-            await query.edit_message_text(
-                "📚 **Browse Confessions by Category:** \n\nSelect a category:",
-                reply_markup=get_browse_keyboard(show_back=True),
-                parse_mode=constants.ParseMode.MARKDOWN
-            )
+            await query.edit_message_text(text, reply_markup=get_browse_keyboard(show_back=True), parse_mode=constants.ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.warning(f"Browse menu edit failed (often ok): {e}")
-    else: # Started via ReplyKeyboardMarkup text button
-        await update.message.reply_text(
-            "📚 **Browse Confessions by Category:** \n\nSelect a category:",
-            reply_markup=get_browse_keyboard(show_back=True),
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
+    else:
+        await update.message.reply_text(text, reply_markup=get_browse_keyboard(show_back=True), parse_mode=constants.ParseMode.MARKDOWN_V2)
         
-    # Clear index/list from previous session
     context.user_data.pop('confessions_list', None)
     context.user_data.pop('current_index', None)
     
@@ -510,8 +576,8 @@ async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TY
     
     if not confessions:
         await query.edit_message_text(
-            f"❌ No approved confessions found for **{category_name}**.",
-            parse_mode=constants.ParseMode.MARKDOWN,
+            f"❌ No approved confessions found for \\*\\*{category_name}\\*\\*\\.",
+            parse_mode=constants.ParseMode.MARKDOWN_V2,
             reply_markup=get_browse_keyboard(show_back=True) 
         )
         return BROWSING_CONFESSIONS
@@ -526,7 +592,6 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     if not confessions: return 
     
-    # Data is (id, text, category, timestamp)
     c_id, text, category, timestamp = confessions[current_index]
     
     formatted_text = format_browsing_confession(c_id, text, category, timestamp, current_index, len(confessions))
@@ -542,16 +607,15 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await update.callback_query.edit_message_text(
                 text=formatted_text,
                 reply_markup=keyboard,
-                parse_mode=constants.ParseMode.MARKDOWN
+                parse_mode=constants.ParseMode.MARKDOWN_V2
             )
         except Exception as e:
              logger.warning(f"Error editing message during navigation: {e}")
     else:
-        # Send a new message (used for deep links)
         await update.message.reply_text(
             text=formatted_text,
             reply_markup=keyboard,
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=constants.ParseMode.MARKDOWN_V2
         )
 
 
@@ -560,7 +624,7 @@ async def navigate_confession(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
-    action = query.data.split('_')[0] # 'prev' or 'next'
+    action = query.data.split('_')[0] 
     confessions = context.user_data.get('confessions_list', [])
     current_index = context.user_data.get('current_index', 0)
     
@@ -582,42 +646,32 @@ async def back_to_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     
-    # The callback is 'back_conf_CONFESSION_ID'
     confession_id = int(query.data.split('_')[2])
     
-    # Ensure the correct confession is loaded/selected in user_data before displaying
     if 'confessions_list' not in context.user_data:
-        # Fallback to fetching the single confession if list is missing
         confession_full = db.get_confession(confession_id)
         if not confession_full:
-            await query.edit_message_text("Confession not found.")
+            await query.edit_message_text("Confession not found\\.", parse_mode=constants.ParseMode.MARKDOWN_V2)
             return BROWSING_CONFESSIONS
         
-        # Data structure (id, text, category, timestamp)
         confession_data = (confession_full[0], confession_full[3], confession_full[2], confession_full[6])
         context.user_data['confessions_list'] = [confession_data]
         context.user_data['current_index'] = 0
     else:
-        # Find the index of the confession_id in the current list
         try:
             index = next(i for i, data in enumerate(context.user_data['confessions_list']) if data[0] == confession_id)
             context.user_data['current_index'] = index
         except StopIteration:
-            # If not found, display the first one
             context.user_data['current_index'] = 0
 
     await display_confession(update, context, via_callback=True)
-    return BROWSING_CONFESSIONS # Stay in browsing state
-
-
-# --- Comment Logic ---
+    return BROWSING_CONFESSIONS
 
 async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Fetches and displays comments for the current confession."""
     query = update.callback_query
-    await query.answer()
+    await query.answer("Fetching comments\\.\\.")
     
-    # Callback is 'view_comments_CONFESSION_ID'
     confession_id = int(query.data.split('_')[2])
     
     comments = db.get_comments(confession_id)
@@ -626,7 +680,7 @@ async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.edit_message_text(
         formatted_comments,
         reply_markup=get_comments_management(confession_id, can_comment=True),
-        parse_mode=constants.ParseMode.MARKDOWN
+        parse_mode=constants.ParseMode.MARKDOWN_V2
     )
     
     return BROWSING_CONFESSIONS 
@@ -637,15 +691,13 @@ async def start_add_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     
-    # Callback is 'add_comment_CONFESSION_ID'
     confession_id = int(query.data.split('_')[2])
     context.user_data['comment_confession_id'] = confession_id
     
-    # The message is sent as a new message, not an edit, as we are starting a conversation
     await query.message.reply_text(
-        f"📝 **Write your anonymous comment for Confession #{confession_id}:**\n\n"
-        "Type /cancel to stop.",
-        parse_mode=constants.ParseMode.MARKDOWN
+        f"📝 \\*\\*Write your anonymous comment for Confession \\#{confession_id}:\\*\\*\\n\\n"
+        "Type /cancel to stop\\.",
+        parse_mode=constants.ParseMode.MARKDOWN_V2
     )
     
     return WRITING_COMMENT
@@ -657,24 +709,26 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     confession_id = context.user_data.pop('comment_confession_id', None)
     
     if not confession_id:
-        await update.message.reply_text("❌ Error: Comment session expired. Please try again.")
+        await update.message.reply_text("❌ Error: Comment session expired\\. Please try again\\.", reply_markup=get_main_keyboard(CHANNEL_LINK), parse_mode=constants.ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
         
     if not (1 <= len(comment_text) <= 500):
         await update.message.reply_text(
-            "❌ **Comment must be between 1 and 500 characters.**\n\n"
+            "❌ \\*\\*Comment must be between 1 and 500 characters\\.\\*\\*\\n\\n"
             "Try again (or /cancel):",
-            parse_mode=constants.ParseMode.MARKDOWN
+            parse_mode=constants.ParseMode.MARKDOWN_V2
         )
-        # Re-save the ID if the user needs to retry
         context.user_data['comment_confession_id'] = confession_id 
         return WRITING_COMMENT
         
-    db.save_comment(confession_id, user_id, comment_text)
+    comment_id = db.save_comment(confession_id, user_id, comment_text)
     
-    # 2. UPDATE CHANNEL POST COUNT
+    if not comment_id:
+        await update.message.reply_text("❌ \\*\\*Error saving comment\\.\\*\\* Please try again later\\.", parse_mode=constants.ParseMode.MARKDOWN_V2, reply_markup=get_main_keyboard(CHANNEL_LINK))
+        return ConversationHandler.END
+
     confession = db.get_confession(confession_id)
-    if confession and confession[5]: # Index 5 is channel_message_id
+    if confession and confession[5]: 
         channel_message_id = confession[5]
         category = confession[2]
         confession_text = confession[3]
@@ -683,44 +737,47 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             comment_count = db.get_comment_count(confession_id)
             updated_text = format_confession_for_post(confession_id, category, confession_text, comment_count)
             
-            # Update the channel post text (which includes the comment count)
             await context.bot.edit_message_text(
                 chat_id=CHANNEL_ID,
                 message_id=channel_message_id,
                 text=updated_text,
                 reply_markup=get_channel_post_keyboard(confession_id, BOT_USERNAME),
-                parse_mode=constants.ParseMode.MARKDOWN
+                parse_mode=constants.ParseMode.MARKDOWN_V2
             )
         except Exception as e:
             logger.error(f"Failed to update channel post {channel_message_id} count: {e}")
             
-    await update.message.reply_text("✅ **Comment submitted anonymously!**", reply_markup=get_main_keyboard(CHANNEL_LINK), parse_mode=constants.ParseMode.MARKDOWN)
+    await update.message.reply_text("✅ \\*\\*Comment submitted anonymously\\!\\*\\*", parse_mode=constants.ParseMode.MARKDOWN_V2, reply_markup=get_main_keyboard(CHANNEL_LINK))
     
     return ConversationHandler.END
 
-# --- Fallbacks and Main Menu ---
-
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Return to main menu from an inline callback."""
+    """Return to main menu from an inline callback (e.g., from Settings)."""
     query = update.callback_query
     await query.answer()
     
-    welcome_text = "🤫 **Confession Bot**\n\nWelcome back! Use the keyboard below."
+    welcome_text = "🤫 \\*\\*Confession Bot\\*\\*\\n\\nWelcome back\\! Use the keyboard below\\."
     
     try:
         await query.edit_message_text(
             welcome_text, 
-            parse_mode=constants.ParseMode.MARKDOWN,
+            parse_mode=constants.ParseMode.MARKDOWN_V2,
         )
     except Exception as e:
         logger.warning(f"main_menu edit failed (often OK if message is identical): {e}")
         
-    return ConversationHandler.END # End any pending conversation
+    return ConversationHandler.END
 
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /cancel command."""
+    """Handles the /cancel command and the 'cancel' callback."""
     context.user_data.clear()
-    await update.message.reply_text("Operation cancelled.", reply_markup=get_main_keyboard(CHANNEL_LINK))
+    
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("Operation cancelled\\.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")]],), parse_mode=constants.ParseMode.MARKDOWN_V2)
+    else:
+        await update.message.reply_text("Operation cancelled\\.", reply_markup=get_main_keyboard(CHANNEL_LINK), parse_mode=constants.ParseMode.MARKDOWN_V2)
+        
     return ConversationHandler.END
 
 # --- Main Application Setup ---
@@ -749,7 +806,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_handler)]
     )
 
-    # 2. Comment Conversation Handler (Starts when user hits 'Add Comment' from a browsing/view message)
+    # 2. Comment Conversation Handler
     comment_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_comment, pattern="^add_comment_")],
         states={
@@ -760,7 +817,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_handler)]
     )
     
-    # 3. Browsing Conversation Handler (Handles all browsing actions)
+    # 3. Browsing Conversation Handler
     browsing_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^📖 Browse$"), browse_menu)], 
         states={
@@ -768,8 +825,8 @@ def main():
                 CallbackQueryHandler(start_browse_category, pattern="^browse_"),
                 CallbackQueryHandler(navigate_confession, pattern="^next_|^prev_"),
                 CallbackQueryHandler(view_comments, pattern="^view_comments_"),
-                CallbackQueryHandler(back_to_confession, pattern="^back_conf_"), # New callback
-                CallbackQueryHandler(browse_menu, pattern="^back_browse$"), # Returns to category selection
+                CallbackQueryHandler(back_to_confession, pattern="^back_conf_"),
+                CallbackQueryHandler(browse_menu, pattern="^back_browse$"),
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_handler)]
@@ -777,6 +834,7 @@ def main():
 
     # --- Handlers ---
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("review", review_pending_confessions)) # New admin review command
     app.add_handler(confession_conv_handler)
     app.add_handler(comment_conv_handler)
     app.add_handler(browsing_conv_handler)
@@ -784,9 +842,9 @@ def main():
     # General/Admin Callbacks
     app.add_handler(CallbackQueryHandler(handle_admin_action, pattern="^approve_|^reject_|^pending_"))
     app.add_handler(CallbackQueryHandler(main_menu, pattern="^back_main$"))
-    app.add_handler(CallbackQueryHandler(main_menu, pattern="^cancel$")) # Catch the cancel from keyboards.py
+    app.add_handler(CallbackQueryHandler(cancel_handler, pattern="^cancel$"))
     
-    # Message Handler for the remaining main menu text buttons (Help, Settings, Comments)
+    # Message Handler for the remaining main menu text buttons
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_button))
     
     logger.info("Bot is running...")
