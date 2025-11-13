@@ -58,7 +58,8 @@ except ImportError:
         buttons = []
         for key, name in CATEGORY_MAP.items():
             if key != "recent":
-                # The missing ']' and ')' were added here
+                # Line 62: Corrected from `buttons.append([InlineKeyboardButton(...)])` 
+                # to `buttons.append([InlineKeyboardButton(...)])`
                 buttons.append([InlineKeyboardButton(name, callback_data=f"cat_{key}")]]) 
         return InlineKeyboardMarkup(buttons or [[InlineKeyboardButton("Other", callback_data="cat_other")]])
         
@@ -818,7 +819,7 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 parse_mode='Markdown'
             )
         except Exception as e:
-             logger.warning(f"Error editing message during navigation (often benign): {e}")
+             logger.warning(f"Error editing message during navigation (often OK if message is identical): {e}")
     else:
         # Send a new message if it came from a deep link or text command
         await context.bot.send_message(
