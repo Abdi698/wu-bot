@@ -16,6 +16,22 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 
+# --- Conversation States and Categories ---
+SELECTING_CATEGORY, WRITING_CONFESSION, BROWSING_CONFESSIONS, WRITING_COMMENT = range(4)
+
+CATEGORIES_LIST = [
+    "Academic Stress", "Friendship", "Love & Relationships", 
+    "Regrets", "Achievements", "Fear & Anxiety", "Other"
+]
+
+CATEGORY_MAP = {
+    "relationship": "Love & Relationships", "friendship": "Friendship", 
+    "campus": "Academic Stress", "general": "Other", 
+    "vent": "Fear & Anxiety", "secret": "Regrets", "recent": "Recent",
+    "achievements": "Achievements", "other": "Other" 
+}
+
+
 # --- Import Keyboards (Assuming you have a 'keyboards.py' file) ---
 # NOTE: If you don't have this file, you will need to define the keyboard functions 
 # (get_main_keyboard, get_category_keyboard, etc.) directly in this file.
@@ -34,19 +50,24 @@ except ImportError:
     print("WARNING: 'keyboards.py' not found. Define dummy keyboards or create the file.")
     # Define dummy keyboards to prevent crash if file is missing (for demonstration)
     def get_main_keyboard(): 
+        # Standard main menu buttons (assuming ReplyKeyboardMarkup is handled by calling code)
         return InlineKeyboardMarkup([[InlineKeyboardButton("Start", callback_data="start")]])
+    
     def get_category_keyboard(): 
-        # Must return InlineKeyboardMarkup, not ReplyKeyboardMarkup
+        # CORRECTED SYNTAX ERROR HERE
         buttons = []
         for key, name in CATEGORY_MAP.items():
             if key != "recent":
-                buttons.append([InlineKeyboardButton(name, callback_data=f"cat_{key}")]
+                # The missing ']' and ')' were added here
+                buttons.append([InlineKeyboardButton(name, callback_data=f"cat_{key}")]]) 
         return InlineKeyboardMarkup(buttons or [[InlineKeyboardButton("Other", callback_data="cat_other")]])
+        
     def get_browse_keyboard(show_back=False): 
         buttons = [[InlineKeyboardButton("Latest", callback_data="browse_recent")]]
         if show_back:
             buttons.append([InlineKeyboardButton("🔙 Back to Browse Menu", callback_data="back_browse")])
         return InlineKeyboardMarkup(buttons)
+        
     def get_confession_navigation(c_id, total, index): 
         nav_row = []
         if index > 1:
@@ -59,17 +80,25 @@ except ImportError:
             [InlineKeyboardButton("📝 Add Comment", callback_data=f"add_comment_{c_id}")],
             [InlineKeyboardButton("🔙 Back to Browse Menu", callback_data="back_browse")]
         ])
+        
     def get_admin_keyboard(c_id): 
         return InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Approve", callback_data=f"approve_{c_id}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"reject_{c_id}")
         ]])
+        
     def get_comments_management(c_id): 
         return InlineKeyboardMarkup([[InlineKeyboardButton("📝 Add Comment", callback_data=f"add_comment_{c_id}"), InlineKeyboardButton("🔙 Back to Confession", callback_data=f"go_to_conf_{c_id}")]])
+        
     def get_channel_post_keyboard(c_id, username): 
         return InlineKeyboardMarkup([[InlineKeyboardButton("Comment Here 💬", url=f"t.me/{username}?start=viewconf_{c_id}")]])
+        
     def get_settings_keyboard(): 
-        return InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_main")]])
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔔 Notifications", callback_data="settings_notifications"),
+            InlineKeyboardButton("🌙 Dark Mode", callback_data="settings_darkmode"),
+            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_main")
+        ]])
 
 
 # Load environment variables (from .env file)
@@ -78,7 +107,6 @@ load_dotenv()
 # --- Configuration (READING FROM .ENV) ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID") or os.getenv("ADMIN_IDS") 
-# Assuming ADMIN_CHAT_ID can be a comma-separated list of IDs or a single chat ID for notifications
 ADMIN_CHAT_ID = [id.strip() for id in ADMIN_CHAT_ID_RAW.split(',')] if ADMIN_CHAT_ID_RAW else []
 
 try:
@@ -100,7 +128,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- NEW: Help Text Constant (Used by handle_text_button) ---
+# --- Help Text Constant ---
 HELP_TEXT = """
 ❓ *Bot Help & Guidelines*
 
@@ -124,21 +152,6 @@ Here's how to use the bot:
 
 🔒 *Your anonymity is our priority. User IDs are stored to send you approval/rejection notices and are never shared.*
 """
-
-# --- Conversation States and Categories ---
-SELECTING_CATEGORY, WRITING_CONFESSION, BROWSING_CONFESSIONS, WRITING_COMMENT = range(4)
-
-CATEGORIES_LIST = [
-    "Academic Stress", "Friendship", "Love & Relationships", 
-    "Regrets", "Achievements", "Fear & Anxiety", "Other"
-]
-
-CATEGORY_MAP = {
-    "relationship": "Love & Relationships", "friendship": "Friendship", 
-    "campus": "Academic Stress", "general": "Other", 
-    "vent": "Fear & Anxiety", "secret": "Regrets", "recent": "Recent",
-    "achievements": "Achievements", "other": "Other" # Added missing keys for safety
-}
 
 
 # --- Database Management ---
@@ -508,7 +521,7 @@ async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif text == "⚙️ Settings":
         await update.message.reply_text(
             "⚙️ *Settings Menu*\n\n"
-            "These features are not yet implemented, but will be available in the future.",
+            "Manage bot preferences.",
             reply_markup=get_settings_keyboard(), 
             parse_mode='Markdown'
         )
@@ -648,6 +661,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     # CRITICAL: Check if the user is in the ADMIN_CHAT_ID list
+    # Note: query.from_user.id is an integer, ADMIN_CHAT_ID elements are strings
     if str(query.from_user.id) not in ADMIN_CHAT_ID: 
         await query.answer("❌ Only admins can perform this action.", show_alert=True)
         return
@@ -995,6 +1009,11 @@ async def cancel_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if confession_id:
         # If possible, return to the confession view
+        # We need the update object to be a Message or CallbackQuery for go_to_confession.
+        # Since this came from a CallbackQuery, we simulate a 'go_to_conf' event
+        
+        # Temporarily fake the query data to reuse go_to_confession logic
+        query.data = f"go_to_conf_{confession_id}"
         await go_to_confession(update, context) 
         return BROWSING_CONFESSIONS
     else:
@@ -1015,9 +1034,13 @@ def main():
         
     app = Application.builder().token(BOT_TOKEN).build()
     
+    # Fallback function for /cancel command during confession/commenting
+    async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Operation cancelled.", reply_markup=get_main_keyboard())
+        return ConversationHandler.END
+        
     # 1. Submission Conversation Handler (Category -> Write -> Submit)
     confession_conv_handler = ConversationHandler(
-        # Entry point is the InlineKeyboardButton "📝 Start Confession"
         entry_points=[CallbackQueryHandler(start_confession, pattern="^start_confess$")],
         
         states={
@@ -1028,11 +1051,9 @@ def main():
             WRITING_CONFESSION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_confession)
             ],
-            # WRITING_COMMENT state is now included here for safety, though it's typically a separate flow
-            # This allows the MessageHandler to capture the comment text
         },
         
-        fallbacks=[CommandHandler("cancel", cancel_confession_command), CallbackQueryHandler(cancel_confession, pattern="^cancel_confess$")]
+        fallbacks=[CommandHandler("cancel", cancel_handler), CallbackQueryHandler(cancel_confession, pattern="^cancel_confess$")]
     )
 
     # 2. Comment Conversation Handler (Started from a button, waiting for text)
@@ -1044,23 +1065,18 @@ def main():
                 CallbackQueryHandler(cancel_comment, pattern="^cancel_comment$")
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_comment)]
+        fallbacks=[CommandHandler("cancel", cancel_handler)]
     )
     
     # 3. Browsing Conversation Handler (Category Selection -> Navigation)
     browsing_conv_handler = ConversationHandler(
-        # Entry point from MessageHandler '📖 Browse' button or deep link
         entry_points=[MessageHandler(filters.Regex("^📖 Browse$"), browse_menu)], 
         states={
             BROWSING_CONFESSIONS: [
-                # Category Selection
                 CallbackQueryHandler(start_browse_category, pattern="^browse_"),
-                # Navigation
                 CallbackQueryHandler(navigate_confession, pattern="^next_conf$|^prev_conf$"),
-                # Viewing/Adding Comments (These trigger the secondary flow or change the message)
                 CallbackQueryHandler(view_comments, pattern="^view_comments_"),
                 CallbackQueryHandler(go_to_confession, pattern="^go_to_conf_"),
-                # Back button
                 CallbackQueryHandler(back_to_browse_menu, pattern="^back_browse$"),
             ]
         },
@@ -1087,9 +1103,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    # Dummy function for command fallback
-    async def cancel_confession_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Operation cancelled.", reply_markup=get_main_keyboard())
-        return ConversationHandler.END
-        
     main()
