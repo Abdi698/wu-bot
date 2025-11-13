@@ -1,5 +1,5 @@
-python-telegram-bot
-python-dotenv==1.0.0
-aiogram
-python-dotenv
-flask
+# File name: requirements.txt
+
+python-telegram-bot==21.1
+python-dotenv==1.0.1
+httpx
