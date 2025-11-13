@@ -46,7 +46,7 @@ try:
     CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 except (TypeError, ValueError):
     CHANNEL_ID = os.getenv("CHANNEL_ID")
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/telegram")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/wu_confession")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS")
