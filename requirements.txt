@@ -1,5 +1,4 @@
-# File name: requirements.txt
-
-python-telegram-bot==21.1
-python-dotenv==1.0.1
-httpx
+python-telegram-bot==20.3
+python-dotenv==1.0.0
+flask
+sqlite-vfs
