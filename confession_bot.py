@@ -1,5 +1,24 @@
 # File name: confession_bot.py
 
+import sys
+import os
+import atexit
+
+# Prevent multiple instances on Render
+if os.path.exists('/tmp/bot_running.lock'):
+    print("❌ Another bot instance is already running. Exiting.")
+    sys.exit(0)
+else:
+    with open('/tmp/bot_running.lock', 'w') as f:
+        f.write('1')
+
+# Cleanup function
+def cleanup():
+    if os.path.exists('/tmp/bot_running.lock'):
+        os.remove('/tmp/bot_running.lock')
+        print("✅ Cleanup completed - lock file removed")
+atexit.register(cleanup)
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, 
@@ -13,7 +32,6 @@ from telegram.ext import (
 import logging
 import sqlite3
 from datetime import datetime
-import os
 from dotenv import load_dotenv
 
 # --- Import Keyboards (Assuming you have a 'keyboards.py' file) ---
@@ -220,6 +238,7 @@ class DatabaseManager:
             ''')
             
             conn.commit()
+            print("✅ Database initialized successfully")
         except Exception as e:
             logger.error(f"❌ Database initialization error: {e}")
         finally:
@@ -1154,24 +1173,47 @@ def main() -> None:
         webhook_url = f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}"
         
         async def post_init(application):
-            await application.bot.set_webhook(webhook_url)
-            logger.info(f"Webhook set to: {webhook_url}")
+            try:
+                # Delete any existing webhook first
+                await application.bot.delete_webhook()
+                # Set new webhook
+                await application.bot.set_webhook(webhook_url)
+                logger.info(f"✅ Webhook successfully set to: {webhook_url}")
+                print(f"✅ Webhook configured successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to set webhook: {e}")
+                print(f"❌ Webhook setup failed: {e}")
             
         async def post_shutdown(application):
-            await application.bot.delete_webhook()
-            logger.info("Webhook removed")
+            try:
+                await application.bot.delete_webhook()
+                logger.info("✅ Webhook removed during shutdown")
+                print("✅ Webhook removed during shutdown")
+            except Exception as e:
+                logger.error(f"❌ Error during webhook shutdown: {e}")
+                print(f"❌ Error during webhook shutdown: {e}")
             
         print(f"🚀 Starting webhook on port {PORT}")
         print(f"🌐 Webhook URL: {webhook_url}")
         
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=webhook_url,
-            secret_token='WEBHOOK_SECRET',
-            post_init=post_init,
-            post_shutdown=post_shutdown
-        )
+        try:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                webhook_url=webhook_url,
+                secret_token='WEBHOOK_SECRET',
+                post_init=post_init,
+                post_shutdown=post_shutdown
+            )
+        except Exception as e:
+            logger.error(f"❌ Webhook failed: {e}")
+            print(f"❌ Webhook failed, switching to polling: {e}")
+            # Fallback to polling if webhook fails
+            print("🔄 Starting with polling as fallback...")
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                close_loop=False
+            )
     else:
         # Development: Use polling
         print("🔧 Development mode: Starting with polling...")
@@ -1181,4 +1223,6 @@ def main() -> None:
         )
 
 if __name__ == '__main__':
+    print("🤖 Starting Ethio Student Confessions Bot...")
+    print("✅ Instance lock check passed")
     main()
