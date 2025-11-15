@@ -149,8 +149,13 @@ except ImportError:
         ])
     
     def get_channel_post_keyboard(c_id, username): 
+        # FIXED: Proper URL format for channel comment button
+        clean_username = username.replace('@', '')
+        url = f"https://t.me/{clean_username}?start=viewconf_{c_id}"
+        print(f"🔗 Generated channel button URL: {url}")
+        logger.info(f"Channel button URL for confession {c_id}: {url}")
         return InlineKeyboardMarkup([[
-            InlineKeyboardButton("💬 Comment & Discuss", url=f"https://t.me/{username}?start=viewconf_{c_id}")
+            InlineKeyboardButton("💬 Comment & Discuss", url=url)
         ]])
     
     def get_settings_keyboard(): 
@@ -723,10 +728,13 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             channel_text = format_channel_post(confession_id, category, confession_text)
             
+            # FIXED: Ensure bot username is clean (no @ symbol)
+            clean_bot_username = BOT_USERNAME.replace('@', '')
+            
             channel_message = await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=channel_text,
-                reply_markup=get_channel_post_keyboard(confession_id, BOT_USERNAME), 
+                reply_markup=get_channel_post_keyboard(confession_id, clean_bot_username), 
                 parse_mode='Markdown'
             )
             
@@ -971,7 +979,7 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 chat_id=CHANNEL_ID,
                 message_id=channel_message_id,
                 text=new_channel_text,
-                reply_markup=get_channel_post_keyboard(confession_id, BOT_USERNAME), 
+                reply_markup=get_channel_post_keyboard(confession_id, BOT_USERNAME.replace('@', '')), 
                 parse_mode='Markdown'
             )
     except Exception as e:
