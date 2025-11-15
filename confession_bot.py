@@ -1112,9 +1112,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to send critical error notification to admin: {e}")
 
-# --- MAIN FUNCTION WITH WEBHOOK FIX ---
+# --- MAIN FUNCTION WITH PROPER PORT BINDING ---
 def main() -> None:
-    """Start the bot with enhanced instance management."""
+    """Start the bot with enhanced instance management and proper port binding."""
     
     if not BOT_TOKEN:
         logger.error("Bot token is missing. Exiting.")
@@ -1184,7 +1184,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(main_menu, pattern='^main_menu$|^back_main$'))
     application.add_error_handler(error_handler)
 
-    # --- Webhook setup for Render ---
+    # --- Webhook setup for Render with PROPER PORT BINDING ---
     RENDER_EXTERNAL_URL = os.getenv('RENDER_EXTERNAL_URL')
     
     if RENDER_EXTERNAL_URL:
@@ -1200,6 +1200,8 @@ def main() -> None:
                 await application.bot.set_webhook(webhook_url)
                 logger.info(f"✅ Webhook successfully set to: {webhook_url}")
                 print(f"✅ Webhook configured successfully")
+                print(f"🌐 Webhook URL: {webhook_url}")
+                print(f"🔌 Listening on port: {PORT}")
             except Exception as e:
                 logger.error(f"❌ Failed to set webhook: {e}")
                 print(f"❌ Webhook setup failed: {e}")
@@ -1214,26 +1216,17 @@ def main() -> None:
                 print(f"❌ Error during webhook shutdown: {e}")
             
         print(f"🚀 Starting webhook on port {PORT}")
-        print(f"🌐 Webhook URL: {webhook_url}")
+        print(f"📡 Bind address: 0.0.0.0:{PORT}")
         
-        try:
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                webhook_url=webhook_url,
-                secret_token='WEBHOOK_SECRET',
-                post_init=post_init,
-                post_shutdown=post_shutdown
-            )
-        except Exception as e:
-            logger.error(f"❌ Webhook failed: {e}")
-            print(f"❌ Webhook failed, switching to polling: {e}")
-            # Fallback to polling if webhook fails
-            print("🔄 Starting with polling as fallback...")
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                close_loop=False
-            )
+        # Start webhook with proper binding - FIXED VERSION
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=webhook_url,
+            secret_token='WEBHOOK_SECRET',
+            post_init=post_init,
+            post_shutdown=post_shutdown
+        )
     else:
         # Development: Use polling
         print("🔧 Development mode: Starting with polling...")
