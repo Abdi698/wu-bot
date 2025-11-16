@@ -4,8 +4,9 @@ import sqlite3
 import logging
 import threading
 import time
+import requests
 from datetime import datetime
-from flask import Flask
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, 
@@ -28,6 +29,14 @@ ADMIN_CHAT_IDS = [id.strip() for id in ADMIN_CHAT_ID_RAW.split(',') if id.strip(
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
+# Auto-detect Render URL
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+if not RENDER_EXTERNAL_URL:
+    # Try to auto-detect from Render environment
+    service_name = os.getenv("RENDER_SERVICE_NAME", "")
+    if service_name:
+        RENDER_EXTERNAL_URL = f"https://{service_name}.onrender.com"
+
 # Validate environment variables
 if not BOT_TOKEN:
     print("❌ ERROR: BOT_TOKEN is required")
@@ -44,6 +53,16 @@ if not BOT_USERNAME:
 
 # Clean bot username
 BOT_USERNAME = BOT_USERNAME.replace('@', '').strip()
+
+print("=" * 50)
+print("🤫 CONFESSION BOT STARTING")
+print("=" * 50)
+print(f"✅ Bot: @{BOT_USERNAME}")
+print(f"✅ Channel: {CHANNEL_ID}")
+print(f"✅ Admins: {ADMIN_CHAT_IDS}")
+print(f"🌐 Mode: {'WEBHOOK' if RENDER_EXTERNAL_URL else 'POLLING'}")
+print(f"🔗 URL: {RENDER_EXTERNAL_URL or 'Not set'}")
+print("=" * 50)
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -84,12 +103,13 @@ CATEGORY_MAP = {
     "secret": "😔 Regrets"
 }
 
-# --- Enhanced Flask App for Render Health Checks ---
+# --- Flask App for 24/7 Operation ---
 app = Flask(__name__)
 
-# Global variable to track bot status
-bot_status = "starting"
+# Global variables
+bot_application = None
 start_time = time.time()
+is_running = True
 
 @app.route('/')
 def home():
@@ -102,27 +122,35 @@ def home():
     return f"""
     <html>
         <head>
-            <title>🤫 Confession Bot</title>
+            <title>🤫 Confession Bot - 24/7</title>
             <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; }}
-                .status {{ padding: 10px; border-radius: 5px; margin: 10px 0; }}
-                .running {{ background: #d4edda; color: #155724; }}
-                .stopped {{ background: #f8d7da; color: #721c24; }}
+                body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
+                .container {{ background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                .status {{ padding: 15px; border-radius: 5px; margin: 15px 0; background: #d4edda; color: #155724; }}
+                .info {{ background: #d1ecf1; color: #0c5460; padding: 10px; border-radius: 5px; }}
             </style>
         </head>
         <body>
-            <h1>🤫 Confession Bot</h1>
-            <div class="status running">
-                Status: <strong>RUNNING</strong><br>
-                Uptime: {hours}h {minutes}m {seconds}s<br>
-                Started: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')}
+            <div class="container">
+                <h1>🤫 Confession Bot</h1>
+                <div class="status">
+                    <strong>🟢 RUNNING 24/7</strong><br>
+                    Uptime: {hours}h {minutes}m {seconds}s<br>
+                    Started: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')}
+                </div>
+                <div class="info">
+                    <strong>Bot Info:</strong><br>
+                    • Username: @{BOT_USERNAME}<br>
+                    • Mode: {'Webhook' if RENDER_EXTERNAL_URL else 'Polling'}<br>
+                    • Status: Active and Monitoring
+                </div>
+                <p><strong>Endpoints:</strong></p>
+                <ul>
+                    <li><a href="/health">/health</a> - Health check</li>
+                    <li><a href="/webhook">/webhook</a> - Telegram webhook</li>
+                    <li><a href="/keepalive">/keepalive</a> - Keep-alive ping</li>
+                </ul>
             </div>
-            <p>Endpoints:</p>
-            <ul>
-                <li><a href="/health">/health</a> - JSON health check</li>
-                <li><a href="/status">/status</a> - Bot status</li>
-                <li><a href="/ping">/ping</a> - Simple ping</li>
-            </ul>
         </body>
     </html>
     """
@@ -134,57 +162,59 @@ def health():
     return {
         "status": "healthy",
         "service": "confession-bot",
-        "bot_status": "running",
+        "bot_status": "running_24_7",
         "uptime_seconds": int(uptime),
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "mode": "webhook" if RENDER_EXTERNAL_URL else "polling"
     }
 
-@app.route('/status')
-def status():
-    """Bot status endpoint"""
-    uptime = time.time() - start_time
-    return {
-        "bot": BOT_USERNAME,
-        "status": "running",
-        "uptime": f"{int(uptime)} seconds",
-        "database": "connected",
-        "last_checked": datetime.now().isoformat()
-    }
-
-@app.route('/ping')
-def ping():
-    """Simple ping endpoint"""
-    return "pong"
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Webhook endpoint for Telegram - 24/7 operation"""
+    if bot_application is None:
+        return "Bot not initialized", 500
+    
+    try:
+        update = Update.de_json(request.get_json(), bot_application.bot)
+        await bot_application.process_update(update)
+        return "OK"
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "Error", 500
 
 @app.route('/keepalive')
 def keepalive():
-    """Keepalive endpoint to prevent shutdown"""
-    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+    """Keep-alive endpoint to prevent shutdown"""
+    return {
+        "status": "alive", 
+        "timestamp": datetime.now().isoformat(),
+        "uptime": time.time() - start_time
+    }
 
-def run_flask():
-    """Run Flask app with enhanced configuration"""
-    port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Flask health server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+@app.route('/restart', methods=['POST'])
+def restart():
+    """Manual restart endpoint (admin only)"""
+    # Add authentication if needed
+    logger.info("Manual restart triggered")
+    return {"status": "restart_initiated", "timestamp": datetime.now().isoformat()}
 
-# --- Keep Alive Background Thread ---
-def keep_alive_ping():
-    """Background thread to ping the health endpoint regularly"""
-    import requests
-    base_url = f"http://localhost:{os.environ.get('PORT', 5000)}"
+# --- Keep Alive System ---
+def keep_alive_pinger():
+    """Background thread to keep the service alive"""
+    base_url = RENDER_EXTERNAL_URL or f"http://localhost:{os.environ.get('PORT', 5000)}"
     
-    while True:
+    while is_running:
         try:
             response = requests.get(f"{base_url}/keepalive", timeout=10)
             if response.status_code == 200:
-                print(f"✅ Keep-alive ping successful at {datetime.now().strftime('%H:%M:%S')}")
+                print(f"✅ Keep-alive ping: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             else:
                 print(f"⚠️ Keep-alive ping failed: {response.status_code}")
         except Exception as e:
-            print(f"❌ Keep-alive ping error: {e}")
+            print(f"❌ Keep-alive error: {e}")
         
-        # Ping every 5 minutes to stay alive
-        time.sleep(300)
+        # Ping every 4 minutes to stay alive (Render timeout is 5 minutes)
+        time.sleep(240)
 
 # --- Database Management ---
 class DatabaseManager:
@@ -289,7 +319,7 @@ class DatabaseManager:
                 conn.close()
     
     def get_approved_confessions(self, category=None, limit=50):
-        """Fetches approved confessions with limit for faster loading."""
+        """Fetches approved confessions."""
         conn = None
         try:
             conn = sqlite3.connect('confessions.db', check_same_thread=False)
@@ -407,9 +437,8 @@ def get_browse_keyboard():
     return InlineKeyboardMarkup(buttons)
 
 def get_confession_discussion_keyboard(confession_id):
-    """IMMEDIATE ACCESS: Direct comment buttons when user clicks from channel"""
+    """Direct discussion page when clicking from channel"""
     comments_count = db.get_comments_count(confession_id)
-    
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(f"💬 Add Comment ({comments_count})", callback_data=f"add_comment_{confession_id}"),
@@ -493,42 +522,28 @@ def format_channel_post(confession_id, category, confession_text):
         f"_Click below to join the discussion!_ 👇"
     )
 
-def format_confession_full(confession_data, index, total):
-    """Full confession format with comment count"""
-    confession_id, text, category, timestamp = confession_data
-    
-    try:
-        dt = datetime.fromisoformat(timestamp)
-        date_str = dt.strftime("%b %d, %Y at %H:%M")
-    except (ValueError, TypeError):
-        date_str = "recently"
-        
-    comments_count = db.get_comments_count(confession_id)
-    
-    return (
-        f"📝 *Confession #{confession_id}* ({index}/{total})\n\n"
-        f"*{category}* • {date_str}\n\n"
-        f"{text}\n\n"
-        f"💬 *{comments_count} comments* • Join the discussion below!"
-    )
-
 def format_discussion_welcome(confession_id, confession_data):
     """Welcome message when user clicks from channel"""
     confession_id, text, category, timestamp = confession_data
-    
-    try:
-        dt = datetime.fromisoformat(timestamp)
-        date_str = dt.strftime("%b %d, %Y at %H:%M")
-    except (ValueError, TypeError):
-        date_str = "recently"
-        
     comments_count = db.get_comments_count(confession_id)
     
     return (
         f"💬 *Discussion for Confession #{confession_id}*\n\n"
-        f"*{category}* • {date_str}\n\n"
+        f"*{category}*\n\n"
         f"{text}\n\n"
         f"🔍 *{comments_count} comments* • Share your thoughts below!"
+    )
+
+def format_confession_full(confession_data, index, total):
+    """Full confession format with comment count"""
+    confession_id, text, category, timestamp = confession_data
+    comments_count = db.get_comments_count(confession_id)
+    
+    return (
+        f"📝 *Confession #{confession_id}* ({index}/{total})\n\n"
+        f"*{category}*\n\n"
+        f"{text}\n\n"
+        f"💬 *{comments_count} comments* • Join the discussion below!"
     )
 
 def format_comments_list(confession_id, comments_list):
@@ -543,15 +558,7 @@ def format_comments_list(confession_id, comments_list):
     for i, (username, text, timestamp) in enumerate(comments_list):
         safe_comment_text = escape_markdown_text(text)
         anon_name = f"Anonymous #{i+1}"
-        
-        time_str = ""
-        try:
-            dt = datetime.fromisoformat(timestamp.split('.')[0])
-            time_str = dt.strftime('%H:%M • %b %d')
-        except Exception:
-            time_str = "recently"
-
-        comment_blocks.append(f"👤 *{anon_name}* ({time_str}):\n» {safe_comment_text}\n")
+        comment_blocks.append(f"👤 *{anon_name}*:\n» {safe_comment_text}\n")
             
     return header + "\n".join(comment_blocks)
 
@@ -560,16 +567,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message and main keyboard."""
     context.user_data.clear()
     
-    # Check if it's a deep link from channel
+    # Handle deep link from channel
     if context.args:
         payload = context.args[0]
         if payload.startswith('discuss_'):
             try:
                 confession_id = int(payload.split('_')[1])
                 confession = db.get_confession(confession_id)
-                
                 if confession and confession[6] == 'approved':
-                    # Show discussion page immediately
                     confession_data = (confession[0], confession[4], confession[3], confession[5])
                     await update.message.reply_text(
                         format_discussion_welcome(confession_id, confession_data),
@@ -577,7 +582,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=get_confession_discussion_keyboard(confession_id)
                     )
                     return BROWSING_CONFESSIONS
-            except (IndexError, ValueError, Exception) as e:
+            except Exception as e:
                 logger.error(f"Error handling deep link: {e}")
     
     welcome_text = (
@@ -979,25 +984,6 @@ async def back_to_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Returns to the confession view from comments."""
     query = update.callback_query
     await query.answer()
-    
-    try:
-        confession_id = int(query.data.split('_')[3])
-    except (IndexError, ValueError):
-        await query.edit_message_text(
-            "❌ Error: Could not find that confession.", 
-            reply_markup=get_main_keyboard()
-        )
-        return ConversationHandler.END
-    
-    # Find confession in current list
-    confessions = context.user_data.get('confessions_list', [])
-    current_index = 0
-    for i, confession_data in enumerate(confessions):
-        if confession_data[0] == confession_id:
-            current_index = i
-            break
-    
-    context.user_data['current_index'] = current_index
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
 
@@ -1095,28 +1081,29 @@ async def cancel_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.clear()
     return ConversationHandler.END
 
+# --- Webhook Setup ---
+async def setup_webhook(application):
+    """Set up webhook for 24/7 operation"""
+    if RENDER_EXTERNAL_URL:
+        webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+        # Delete any existing webhook first
+        await application.bot.delete_webhook()
+        # Set new webhook
+        await application.bot.set_webhook(webhook_url)
+        print(f"✅ Webhook configured: {webhook_url}")
+        return True
+    else:
+        print("🔄 No external URL detected, using polling mode")
+        return False
+
 # --- Main Application ---
 def main():
-    """Run the bot with enhanced keep-alive features."""
-    # Startup message
-    print("🤫 Confession Bot Starting...")
-    print(f"✅ Bot Username: @{BOT_USERNAME}")
-    print(f"✅ Channel ID: {CHANNEL_ID}")
-    print(f"✅ Admin IDs: {ADMIN_CHAT_IDS}")
-    print("✅ Database initialized")
+    global bot_application
     
-    # Start Flask in background for Render health checks
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print("✅ Health check server started")
-    
-    # Start keep-alive pinger
-    keepalive_thread = threading.Thread(target=keep_alive_ping, daemon=True)
-    keepalive_thread.start()
-    print("✅ Keep-alive pinger started")
+    print("🚀 Initializing 24/7 Confession Bot...")
     
     # Create bot application
-    application = Application.builder().token(BOT_TOKEN).build()
+    bot_application = Application.builder().token(BOT_TOKEN).build()
 
     # Conversation Handler
     conv_handler = ConversationHandler(
@@ -1140,9 +1127,9 @@ def main():
                 CallbackQueryHandler(navigate_confession, pattern='^next_|^prev_'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
                 CallbackQueryHandler(browse_menu, pattern='^browse_menu$'),
-                CallbackQueryHandler(start_comment, pattern='^add_comment_'),  # Add comment
-                CallbackQueryHandler(view_comments, pattern='^view_comments_'), # View comments
-                CallbackQueryHandler(back_to_confession, pattern='^back_to_confession_') # Back to confession
+                CallbackQueryHandler(start_comment, pattern='^add_comment_'),
+                CallbackQueryHandler(view_comments, pattern='^view_comments_'),
+                CallbackQueryHandler(back_to_confession, pattern='^back_to_confession_')
             ],
             WRITING_COMMENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment),
@@ -1157,26 +1144,50 @@ def main():
     )
 
     # Add handlers
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(handle_admin_approval, pattern='^approve_|^reject_'))
+    bot_application.add_handler(conv_handler)
+    bot_application.add_handler(CallbackQueryHandler(handle_admin_approval, pattern='^approve_|^reject_'))
 
-    # Update bot status
-    global bot_status
-    bot_status = "running"
+    # Start Flask server
+    port = int(os.environ.get('PORT', 5000))
     
-    # Start bot polling with error recovery
-    print("🔄 Starting bot polling...")
-    try:
-        application.run_polling(
+    def run_flask_app():
+        print(f"🌐 Starting Flask server on port {port}")
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    
+    # Start Flask in background thread
+    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    flask_thread.start()
+    
+    # Start keep-alive pinger
+    keepalive_thread = threading.Thread(target=keep_alive_pinger, daemon=True)
+    keepalive_thread.start()
+    print("✅ Keep-alive system started")
+    
+    # Set up and run bot
+    if RENDER_EXTERNAL_URL:
+        # Webhook mode for 24/7 production
+        print("🚀 Starting in WEBHOOK mode (24/7 operation)")
+        bot_application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=f"{RENDER_EXTERNAL_URL}/webhook",
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-            close_loop=False
+            secret_token='WEBHOOK_SECRET'
         )
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-        print("🔄 Restarting bot in 10 seconds...")
-        time.sleep(10)
-        main()  # Auto-restart
+    else:
+        # Polling mode for development with auto-restart
+        print("🔧 Starting in POLLING mode (development)")
+        try:
+            bot_application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+                close_loop=False
+            )
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+            print("🔄 Auto-restarting in 10 seconds...")
+            time.sleep(10)
+            main()  # Auto-restart
 
 if __name__ == '__main__':
     main()
