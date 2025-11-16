@@ -406,8 +406,22 @@ def get_browse_keyboard():
     ]
     return InlineKeyboardMarkup(buttons)
 
-def get_confession_keyboard(confession_id, total, index):
-    """FASTER: Simplified confession keyboard with immediate comment access"""
+def get_confession_discussion_keyboard(confession_id):
+    """IMMEDIATE ACCESS: Direct comment buttons when user clicks from channel"""
+    comments_count = db.get_comments_count(confession_id)
+    
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"💬 Add Comment ({comments_count})", callback_data=f"add_comment_{confession_id}"),
+            InlineKeyboardButton("📜 View Comments", callback_data=f"view_comments_{confession_id}")
+        ],
+        [InlineKeyboardButton("📖 Browse More Confessions", callback_data="browse_menu")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+    ])
+
+def get_confession_browse_keyboard(confession_id, total, index):
+    """Browse view keyboard with comment count"""
+    comments_count = db.get_comments_count(confession_id)
     buttons = []
     
     # Navigation buttons
@@ -418,11 +432,13 @@ def get_confession_keyboard(confession_id, total, index):
     
     nav_row = [buttons] if buttons else []
     
-    # Action buttons - SIMPLIFIED for faster access
+    # Action buttons with comment count
     action_buttons = [
-        [InlineKeyboardButton("💬 Add Comment", callback_data=f"comment_{confession_id}")],
-        [InlineKeyboardButton("📜 View Comments", callback_data=f"view_{confession_id}")],
-        [InlineKeyboardButton("📚 Browse More", callback_data="browse_menu")],
+        [
+            InlineKeyboardButton(f"💬 Add Comment ({comments_count})", callback_data=f"add_comment_{confession_id}"),
+            InlineKeyboardButton("📜 View Comments", callback_data=f"view_comments_{confession_id}")
+        ],
+        [InlineKeyboardButton("📚 Browse Categories", callback_data="browse_menu")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
     ]
     
@@ -440,17 +456,18 @@ def get_admin_keyboard(confession_id):
         ]
     ])
 
-def get_comments_keyboard(confession_id):
-    """Comments management keyboard - SIMPLIFIED"""
+def get_comments_management_keyboard(confession_id):
+    """Comments management keyboard"""
+    comments_count = db.get_comments_count(confession_id)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Add Comment", callback_data=f"comment_{confession_id}")],
-        [InlineKeyboardButton("⬅️ Back", callback_data=f"back_{confession_id}")],
+        [InlineKeyboardButton(f"💬 Add Comment ({comments_count})", callback_data=f"add_comment_{confession_id}")],
+        [InlineKeyboardButton("⬅️ Back to Confession", callback_data=f"back_to_confession_{confession_id}")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
     ])
 
 def get_channel_post_keyboard(confession_id):
-    """Channel post keyboard"""
-    url = f"https://t.me/{BOT_USERNAME}?start=viewconf_{confession_id}"
+    """Channel post keyboard - goes directly to discussion page"""
+    url = f"https://t.me/{BOT_USERNAME}?start=discuss_{confession_id}"
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("💬 Comment & Discuss", url=url)
     ]])
@@ -463,20 +480,55 @@ def escape_markdown_text(text):
         text = text.replace(char, f'\\{char}')
     return text
 
-def format_confession_preview(confession_data, index, total):
-    """FASTER: Lightweight confession format for quick browsing"""
+def format_channel_post(confession_id, category, confession_text):
+    """Format channel post with comment count"""
+    safe_confession_text = escape_markdown_text(confession_text)
+    comments_count = db.get_comments_count(confession_id)
+    
+    return (
+        f"*Confession #{confession_id}*\n\n"
+        f"{safe_confession_text}\n\n"
+        f"*Category:* {category}\n"
+        f"*Comments:* 💬 {comments_count}\n\n"
+        f"_Click below to join the discussion!_ 👇"
+    )
+
+def format_confession_full(confession_data, index, total):
+    """Full confession format with comment count"""
     confession_id, text, category, timestamp = confession_data
     
-    # Truncate long text for faster loading
-    preview_text = text[:200] + "..." if len(text) > 200 else text
-    
+    try:
+        dt = datetime.fromisoformat(timestamp)
+        date_str = dt.strftime("%b %d, %Y at %H:%M")
+    except (ValueError, TypeError):
+        date_str = "recently"
+        
     comments_count = db.get_comments_count(confession_id)
     
     return (
         f"📝 *Confession #{confession_id}* ({index}/{total})\n\n"
-        f"*{category}*\n\n"
-        f"{preview_text}\n\n"
-        f"💬 *{comments_count} comments*"
+        f"*{category}* • {date_str}\n\n"
+        f"{text}\n\n"
+        f"💬 *{comments_count} comments* • Join the discussion below!"
+    )
+
+def format_discussion_welcome(confession_id, confession_data):
+    """Welcome message when user clicks from channel"""
+    confession_id, text, category, timestamp = confession_data
+    
+    try:
+        dt = datetime.fromisoformat(timestamp)
+        date_str = dt.strftime("%b %d, %Y at %H:%M")
+    except (ValueError, TypeError):
+        date_str = "recently"
+        
+    comments_count = db.get_comments_count(confession_id)
+    
+    return (
+        f"💬 *Discussion for Confession #{confession_id}*\n\n"
+        f"*{category}* • {date_str}\n\n"
+        f"{text}\n\n"
+        f"🔍 *{comments_count} comments* • Share your thoughts below!"
     )
 
 def format_comments_list(confession_id, comments_list):
@@ -507,6 +559,26 @@ def format_comments_list(confession_id, comments_list):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message and main keyboard."""
     context.user_data.clear()
+    
+    # Check if it's a deep link from channel
+    if context.args:
+        payload = context.args[0]
+        if payload.startswith('discuss_'):
+            try:
+                confession_id = int(payload.split('_')[1])
+                confession = db.get_confession(confession_id)
+                
+                if confession and confession[6] == 'approved':
+                    # Show discussion page immediately
+                    confession_data = (confession[0], confession[4], confession[3], confession[5])
+                    await update.message.reply_text(
+                        format_discussion_welcome(confession_id, confession_data),
+                        parse_mode='Markdown',
+                        reply_markup=get_confession_discussion_keyboard(confession_id)
+                    )
+                    return BROWSING_CONFESSIONS
+            except (IndexError, ValueError, Exception) as e:
+                logger.error(f"Error handling deep link: {e}")
     
     welcome_text = (
         "🤫 *Welcome to Confession Bot!*\n\n"
@@ -709,7 +781,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     if action == 'approve':
         try:
             # Post to channel
-            channel_text = f"*Confession #{confession_id}*\n\n{escape_markdown_text(confession_text)}\n\n*Category:* {category}"
+            channel_text = format_channel_post(confession_id, category, confession_text)
             channel_message = await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=channel_text,
@@ -764,7 +836,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode='Markdown'
     )
 
-# --- FAST Browsing Logic ---
+# --- Browsing Logic ---
 async def browse_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows the browsing category menu."""
     browse_text = (
@@ -791,7 +863,7 @@ async def browse_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return BROWSING_CONFESSIONS
 
 async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """FASTER: Fetches and displays confessions with optimized loading."""
+    """Fetches and displays confessions."""
     query = update.callback_query
     await query.answer()
     
@@ -801,7 +873,7 @@ async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['browse_category'] = category_name
     context.user_data['current_index'] = 0 
     
-    # Load limited confessions for faster performance
+    # Load confessions
     confessions = db.get_approved_confessions(category=category_name if category_name != "Latest" else None, limit=20)
     context.user_data['confessions_list'] = confessions
     
@@ -819,7 +891,7 @@ async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TY
     return BROWSING_CONFESSIONS
 
 async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE, via_callback=False):
-    """FASTER: Display confession with simplified format."""
+    """Display confession with comment count."""
     confessions = context.user_data.get('confessions_list', [])
     current_index = context.user_data.get('current_index', 0)
     
@@ -839,8 +911,8 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
     confession_data = confessions[current_index]
     confession_id = confession_data[0]
     
-    # Use faster preview format
-    formatted_text = format_confession_preview(confession_data, current_index + 1, len(confessions))
+    # Use full format with comment count
+    formatted_text = format_confession_full(confession_data, current_index + 1, len(confessions))
     
     if via_callback:
         try:
@@ -848,7 +920,7 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 chat_id=update.effective_chat.id,
                 message_id=update.effective_message.message_id,
                 text=formatted_text,
-                reply_markup=get_confession_keyboard(confession_id, len(confessions), current_index + 1),
+                reply_markup=get_confession_browse_keyboard(confession_id, len(confessions), current_index + 1),
                 parse_mode='Markdown'
             )
         except Exception as e:
@@ -857,7 +929,7 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=formatted_text,
-            reply_markup=get_confession_keyboard(confession_id, len(confessions), current_index + 1),
+            reply_markup=get_confession_browse_keyboard(confession_id, len(confessions), current_index + 1),
             parse_mode='Markdown'
         )
 
@@ -878,14 +950,14 @@ async def navigate_confession(update: Update, context: ContextTypes.DEFAULT_TYPE
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
 
-# --- FAST Commenting Logic ---
+# --- Commenting Logic ---
 async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """View comments for a confession."""
     query = update.callback_query
     await query.answer()
 
     try:
-        confession_id = int(query.data.split('_')[1])
+        confession_id = int(query.data.split('_')[2])
     except (IndexError, ValueError):
         await query.edit_message_text(
             "❌ Error: Could not find that confession.", 
@@ -899,7 +971,7 @@ async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.edit_message_text(
         text=formatted_text,
         parse_mode='Markdown',
-        reply_markup=get_comments_keyboard(confession_id)
+        reply_markup=get_comments_management_keyboard(confession_id)
     )
     return BROWSING_CONFESSIONS
 
@@ -907,16 +979,35 @@ async def back_to_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Returns to the confession view from comments."""
     query = update.callback_query
     await query.answer()
+    
+    try:
+        confession_id = int(query.data.split('_')[3])
+    except (IndexError, ValueError):
+        await query.edit_message_text(
+            "❌ Error: Could not find that confession.", 
+            reply_markup=get_main_keyboard()
+        )
+        return ConversationHandler.END
+    
+    # Find confession in current list
+    confessions = context.user_data.get('confessions_list', [])
+    current_index = 0
+    for i, confession_data in enumerate(confessions):
+        if confession_data[0] == confession_id:
+            current_index = i
+            break
+    
+    context.user_data['current_index'] = current_index
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
 
 async def start_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """IMMEDIATE: Start commenting directly from confession view."""
+    """Start commenting directly from confession view."""
     query = update.callback_query
     await query.answer()
     
     try:
-        confession_id = int(query.data.split('_')[1])
+        confession_id = int(query.data.split('_')[2])
     except (IndexError, ValueError):
         await query.edit_message_text(
             "❌ Error: Could not find that confession.", 
@@ -969,11 +1060,17 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         db.save_comment(confession_id, user.id, user.first_name or "Anonymous", comment_text)
+        
+        # Get updated comment count
+        comments_count = db.get_comments_count(confession_id)
+        
         await update.message.reply_text(
-            "✅ *Comment Added Successfully!*\n\n"
-            "Your comment has been posted anonymously.",
+            f"✅ *Comment Added Successfully!*\n\n"
+            f"Your comment has been posted anonymously.\n"
+            f"📊 Total comments: {comments_count}",
             parse_mode='Markdown'
         )
+        
     except Exception as e:
         logger.error(f"Error saving comment: {e}")
         await update.message.reply_text(
@@ -1043,9 +1140,9 @@ def main():
                 CallbackQueryHandler(navigate_confession, pattern='^next_|^prev_'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
                 CallbackQueryHandler(browse_menu, pattern='^browse_menu$'),
-                CallbackQueryHandler(start_comment, pattern='^comment_'),  # Direct comment access
-                CallbackQueryHandler(view_comments, pattern='^view_'),     # Direct view access
-                CallbackQueryHandler(back_to_confession, pattern='^back_') # Fast back navigation
+                CallbackQueryHandler(start_comment, pattern='^add_comment_'),  # Add comment
+                CallbackQueryHandler(view_comments, pattern='^view_comments_'), # View comments
+                CallbackQueryHandler(back_to_confession, pattern='^back_to_confession_') # Back to confession
             ],
             WRITING_COMMENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment),
