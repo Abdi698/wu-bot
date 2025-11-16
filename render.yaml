@@ -1,7 +1,3 @@
-
-## File 6: `render.yaml`
-
-```yaml
 services:
   - type: web
     name: confession-bot
@@ -11,10 +7,10 @@ services:
     startCommand: python confession_bot.py
     envVars:
       - key: BOT_TOKEN
-        value: your_bot_token_here
-      - key: ADMIN_CHAT_ID  
-        value: your_user_id_here
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
       - key: CHANNEL_ID
-        value: your_channel_id_here
+        sync: false
       - key: BOT_USERNAME
-        value: your_bot_username
+        sync: false
