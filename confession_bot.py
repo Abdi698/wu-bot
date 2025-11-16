@@ -4,49 +4,26 @@ import sys
 import os
 import atexit
 import asyncio
+import threading
+from flask import Flask
 
-# Enhanced environment setup
-def setup_environment():
-    """Setup environment with proper error handling"""
-    print("🚀 Initializing Confession Bot Environment...")
-    
-    # Prevent multiple instances
-    lock_file_path = '/tmp/bot_running.lock'
-    
-    def cleanup():
-        """Cleanup lock file on exit"""
-        try:
-            if os.path.exists(lock_file_path):
-                os.remove(lock_file_path)
-                print("✅ Cleanup completed - lock file removed")
-        except Exception as e:
-            print(f"⚠️ Cleanup warning: {e}")
+# Create a simple health check server for Render
+app = Flask(__name__)
 
-    atexit.register(cleanup)
+@app.route('/')
+def health_check():
+    return "🤫 Confession Bot is running!"
 
-    # Check for existing instance
-    try:
-        if os.path.exists(lock_file_path):
-            with open(lock_file_path, 'r') as f:
-                pid = f.read().strip()
-            try:
-                os.kill(int(pid), 0)
-                print("❌ Another bot instance is already running. Exiting.")
-                sys.exit(0)
-            except (ProcessLookupError, ValueError):
-                os.remove(lock_file_path)
-                print("🔄 Removed stale lock file")
-        
-        with open(lock_file_path, 'w') as f:
-            f.write(str(os.getpid()))
-            
-    except Exception as e:
-        print(f"⚠️ Lock file check warning: {e}")
-    
-    print("✅ Environment setup completed")
+def run_flask_app():
+    """Run Flask app in a separate thread for Render health checks"""
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-# Run environment setup
-setup_environment()
+# Start Flask app in a separate thread
+flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+flask_thread.start()
+
+print("🚀 Starting Confession Bot with Health Check Server...")
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -69,7 +46,7 @@ load_dotenv()
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID") or os.getenv("ADMIN_IDS") 
-ADMIN_CHAT_ID = ADMIN_CHAT_ID_RAW.split(',')[0].strip() if ADMIN_CHAT_ID_RAW else None
+ADMIN_CHAT_IDS = [id.strip() for id in ADMIN_CHAT_ID_RAW.split(',')] if ADMIN_CHAT_ID_RAW else []
 
 try:
     CHANNEL_ID = int(os.getenv("CHANNEL_ID")) 
@@ -78,10 +55,10 @@ except (TypeError, ValueError):
 
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
-if not all([BOT_TOKEN, ADMIN_CHAT_ID, CHANNEL_ID, BOT_USERNAME]):
+if not all([BOT_TOKEN, ADMIN_CHAT_IDS, CHANNEL_ID, BOT_USERNAME]):
     print("FATAL ERROR: One or more required environment variables are missing or invalid.")
     print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-    print(f"ADMIN_CHAT_ID: {'✅' if ADMIN_CHAT_ID else '❌'}")
+    print(f"ADMIN_CHAT_IDS: {'✅' if ADMIN_CHAT_IDS else '❌'}")
     print(f"CHANNEL_ID: {'✅' if CHANNEL_ID else '❌'}")
     print(f"BOT_USERNAME: {'✅' if BOT_USERNAME else '❌'}")
     sys.exit(1)
@@ -137,7 +114,7 @@ def get_category_keyboard():
         [InlineKeyboardButton("Friendship", callback_data="cat_friendship")],
         [InlineKeyboardButton("Love & Relationships", callback_data="cat_relationship")],
         [InlineKeyboardButton("Regrets", callback_data="cat_secret")],
-        [InlineKeyboardButton("Achievements", callback_data="cat_general")], # Note: Mapped to 'general' in CATEGORY_MAP
+        [InlineKeyboardButton("Achievements", callback_data="cat_general")],
         [InlineKeyboardButton("Fear & Anxiety", callback_data="cat_vent")],
         [InlineKeyboardButton("Other", callback_data="cat_general")],
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_confess")]
@@ -207,14 +184,6 @@ def get_channel_post_keyboard(confession_id, username):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("💬 Comment & Discuss", url=url)
     ]])
-
-def get_settings_keyboard():
-    """Settings keyboard"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔔 Notifications", callback_data="settings_notifications")],
-        [InlineKeyboardButton("🌙 Dark Mode", callback_data="settings_darkmode")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")] # Fixed: was 'back_main'
-    ])
 
 # --- Database Management ---
 class DatabaseManager:
@@ -406,7 +375,6 @@ db = DatabaseManager()
 # --- Helper Functions ---
 def escape_markdown_text(text):
     """Escape special characters in user-provided text for Telegram MarkdownV2."""
-    # Escape characters required for MarkdownV2: _ * [ ] ( ) ~ ` > # + - = | { } . !
     escape_chars = r'_*[]()`>#+-.!|{}=~-'
     for char in escape_chars:
         text = text.replace(char, f'\\{char}')
@@ -414,14 +382,13 @@ def escape_markdown_text(text):
 
 def format_channel_post(confession_id, category, confession_text):
     """Format channel post"""
-    # *** FIX: Escape user text to prevent Markdown parsing errors ***
     safe_confession_text = escape_markdown_text(confession_text)
     
     comments_count = db.get_comments_count(confession_id)
     category_tag = f"#{category.replace(' ', '_').replace('&', 'and')}" 
     
     return (
-        f"*Confession \#{confession_id}*\n\n"
+        f"*Confession #{confession_id}*\n\n"
         f"{safe_confession_text}\n\n"
         f"Category: {category_tag}\n"
         f"Comments: 💬 {comments_count}"
@@ -440,7 +407,7 @@ def format_browsing_confession(confession_data, index, total_confessions):
     comments_count = db.get_comments_count(confession_id)
     
     return (
-        f"📝 *Confession \#{confession_id}* ({index + 1}/{total_confessions})\n\n"
+        f"📝 *Confession #{confession_id}* ({index + 1}/{total_confessions})\n\n"
         f"*{category}* - {date_str}\n\n"
         f"{text}\n\n"
         f"💬 Comments: {comments_count}"
@@ -448,7 +415,7 @@ def format_browsing_confession(confession_data, index, total_confessions):
 
 def format_comments_list(confession_id, comments_list):
     """Format comments list"""
-    header = f"💬 *Comments for Confession \#{confession_id}* ({len(comments_list)} total)\n\n"
+    header = f"💬 *Comments for Confession #{confession_id}* ({len(comments_list)} total)\n\n"
     
     if not comments_list:
         return header + "No comments yet. Be the first one!"
@@ -456,9 +423,7 @@ def format_comments_list(confession_id, comments_list):
     comment_blocks = []
     
     for i, (username, text, timestamp) in enumerate(comments_list):
-        # Escape comment text for safety
         safe_comment_text = escape_markdown_text(text)
-        
         anon_name = f"User {i+1}"
         
         time_str = ""
@@ -563,14 +528,6 @@ async def handle_text_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_main_keyboard(f"https://t.me/{BOT_USERNAME}")
         )
         return ConversationHandler.END
-        
-    elif text == "⚙️ Settings":
-        await update.message.reply_text(
-            "⚙️ *Settings Menu*\n\nThese features are coming soon!",
-            parse_mode='Markdown',
-            reply_markup=get_settings_keyboard()
-        )
-        return ConversationHandler.END
     
     return ConversationHandler.END
 
@@ -591,15 +548,6 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"main_menu edit failed: {e}")
         
     return ConversationHandler.END
-
-async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles callbacks from the settings menu."""
-    query = update.callback_query
-    
-    if query.data == "settings_notifications":
-        await query.answer("🔔 Notification settings are not yet implemented.", show_alert=True)
-    elif query.data == "settings_darkmode":
-        await query.answer("🌙 Dark mode settings are not yet implemented.", show_alert=True)
 
 # --- Confession Submission Logic ---
 async def start_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -657,22 +605,27 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     admin_message = (
-        f"🆕 *Confession \#*{confession_id} is *PENDING*\n\n"
+        f"🆕 *Confession #{confession_id} is PENDING*\n\n"
         f"👤 *User:* {username} (ID: {user_id})\n"
         f"📂 *Category:* {category}\n"
-        f"📝 *Text:* {escape_markdown_text(confession_text)}\n\n" # Escape for admin message too
+        f"📝 *Text:* {escape_markdown_text(confession_text)}\n\n"
         f"*Admin Action:*"
     )
     
     try:
-        logger.info(f"Attempting to send admin notification to Chat ID: {ADMIN_CHAT_ID}") 
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=admin_message,
-            reply_markup=get_admin_keyboard(confession_id), 
-            parse_mode='Markdown',
-            disable_web_page_preview=True
-        )
+        # Send to all admin IDs
+        for admin_id in ADMIN_CHAT_IDS:
+            try:
+                logger.info(f"Sending admin notification to Chat ID: {admin_id}") 
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to send admin message to {admin_id}: {e}")
         
         await update.message.reply_text(
             "✅ *Confession Submitted!*\n\n"
@@ -682,7 +635,7 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         
     except Exception as e:
-        logger.error(f"Failed to send admin message to {ADMIN_CHAT_ID}: {e}")
+        logger.error(f"Failed to send admin messages: {e}")
         await update.message.reply_text(
             "❌ *Error sending admin notification.* The confession is saved but pending.",
             parse_mode='Markdown',
@@ -697,7 +650,9 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     
-    if str(query.from_user.id) not in ADMIN_CHAT_ID: 
+    # Check if user is in admin list
+    user_id_str = str(query.from_user.id)
+    if user_id_str not in ADMIN_CHAT_IDS:
         await query.answer("❌ Only admins can perform this action.", show_alert=True)
         return
     
@@ -706,7 +661,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     
     confession = db.get_confession(confession_id)
     if not confession:
-        await query.edit_message_text(f"❌ Confession \#{confession_id} not found.")
+        await query.edit_message_text(f"❌ Confession #{confession_id} not found.")
         return
     
     user_id = confession[1]
@@ -753,11 +708,11 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
         # Don't edit the original message, just update the text
         original_text = query.message.text
         await query.edit_message_text(
-            original_text, # Keep original confession text
-            reply_markup=get_admin_keyboard(confession_id), # Keep keyboard
+            original_text,
+            reply_markup=get_admin_keyboard(confession_id),
             parse_mode='Markdown'
         )
-        await query.answer(f"Confession \#{confession_id} set back to pending.") # Use an alert
+        await query.answer(f"Confession #{confession_id} set back to pending.")
         return
 
     try:
@@ -768,7 +723,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     
     await query.edit_message_text(
         f"{status_emoji} *Confession {status_text}!*\n\n"
-        f"Confession \#{confession_id} has been {status_text.lower()}.\n"
+        f"Confession #{confession_id} has been {status_text.lower()}.\n"
         f"User has been notified.",
         parse_mode='Markdown'
     )
@@ -899,7 +854,6 @@ async def navigate_confession(update: Update, context: ContextTypes.DEFAULT_TYPE
     return BROWSING_CONFESSIONS
 
 # --- Commenting Logic ---
-
 async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Displays the list of comments for a confession."""
     query = update.callback_query
@@ -923,7 +877,6 @@ async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         reply_markup=get_comments_management(confession_id)
     )
     
-    # We are still in the browsing state, just viewing comments
     return BROWSING_CONFESSIONS
 
 async def back_to_confession_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -931,11 +884,8 @@ async def back_to_confession_view(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     
-    # display_confession uses context.user_data to find the current index
-    # so we can just call it directly.
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
-
 
 async def request_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Asks the user to write their comment after clicking 'Add Comment'."""
@@ -943,7 +893,6 @@ async def request_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     try:
-        # Get the confession ID from the callback data "add_comment_123"
         confession_id = int(query.data.split('_')[2])
     except (IndexError, ValueError):
         await query.edit_message_text(
@@ -952,7 +901,6 @@ async def request_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return ConversationHandler.END
     
-    # Store the ID so we know what to attach the comment to in the next step
     context.user_data['commenting_on_id'] = confession_id
     
     await query.edit_message_text(
@@ -963,7 +911,6 @@ async def request_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]])
     )
     
-    # Move the conversation to the new WRITING_COMMENT state
     return WRITING_COMMENT
 
 async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -984,10 +931,9 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "❌ *Please ensure your comment is between 5 and 500 characters.*\n\nTry again:", 
             parse_mode='Markdown'
         )
-        return WRITING_COMMENT # Stay in the same state to let them try again
+        return WRITING_COMMENT
 
     try:
-        # Save the comment
         db.save_comment(confession_id, user.id, user.first_name or "Anonymous", comment_text)
         
         await update.message.reply_text(
@@ -999,7 +945,6 @@ async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Error saving comment: {e}")
         await update.message.reply_text("❌ An error occurred while saving your comment. Please try again later.")
     
-    # Send them back to the main menu
     await update.message.reply_text(
         "Returning to the main menu:", 
         reply_markup=get_main_keyboard(f"https://t.me/{BOT_USERNAME}")
@@ -1020,7 +965,6 @@ async def cancel_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 # --- Simple Info Handlers ---
-
 async def help_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the help text from an inline button."""
     query = update.callback_query
@@ -1053,13 +997,11 @@ async def help_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # --- Main Bot Execution ---
-
 def main():
     """Run the bot."""
     application = Application.builder().token(BOT_TOKEN).build()
 
     # --- Conversation Handler ---
-    # This handler manages all the bot's states
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
@@ -1068,8 +1010,7 @@ def main():
             CallbackQueryHandler(main_menu, pattern='^main_menu$'),
             CallbackQueryHandler(help_info, pattern='^help_info$'),
             CallbackQueryHandler(comments_info, pattern='^comments_info$'),
-            CallbackQueryHandler(handle_settings_callback, pattern='^settings_'),
-            MessageHandler(filters.Regex('^(💌 Submit Confession|📖 Browse|💬 Comments|❓ Help|⚙️ Settings)$'), handle_text_button),
+            MessageHandler(filters.Regex('^(💌 Submit Confession|📖 Browse|💬 Comments|❓ Help)$'), handle_text_button),
         ],
         states={
             SELECTING_CATEGORY: [
@@ -1084,7 +1025,6 @@ def main():
                 CallbackQueryHandler(navigate_confession, pattern='^next_|^prev_'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
                 CallbackQueryHandler(browse_menu, pattern='^browse_menu$'),
-                
                 CallbackQueryHandler(request_comment, pattern='^add_comment_'),
                 CallbackQueryHandler(view_comments, pattern='^view_comments_'),
                 CallbackQueryHandler(back_to_confession_view, pattern='^back_browse_')
@@ -1098,22 +1038,33 @@ def main():
             CommandHandler('start', start),
             CommandHandler('help', help_info_command),
             CallbackQueryHandler(main_menu, pattern='^main_menu$'),
-        ]
+        ],
+        per_message=False
     )
 
     application.add_handler(conv_handler)
 
-    # --- Other Handlers (Outside Conversation) ---
-    
-    # Admin handler (must be outside the conversation to work anytime)
+    # --- Other Handlers ---
     application.add_handler(CallbackQueryHandler(handle_admin_approval, pattern='^approve_|^reject_|^pending_'))
-    
-    # Help command fallback
     application.add_handler(CommandHandler('help', help_info_command))
 
-
-    print("🤖 Bot is polling...")
-    application.run_polling()
+    print("🤖 Bot is starting...")
+    
+    # Use webhook for production (Render requires this)
+    port = int(os.environ.get('PORT', 8443))
+    
+    try:
+        # Try polling first for development
+        print("🔄 Starting bot with polling...")
+        application.run_polling()
+    except Exception as e:
+        print(f"❌ Polling failed: {e}")
+        print("🔄 Trying alternative startup...")
+        # Alternative startup method
+        try:
+            application.run_polling(drop_pending_updates=True)
+        except Exception as e2:
+            print(f"❌ All startup methods failed: {e2}")
 
 if __name__ == '__main__':
     main()
