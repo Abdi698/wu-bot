@@ -69,7 +69,7 @@ load_dotenv()
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID") or os.getenv("ADMIN_IDS") 
-ADMIN_CHAT_ID = ADMIN_CHAT_ID_RAW.split(',')[0].strip() if ADMIN_CHAT_ID_RAW else None
+ADMIN_CHAT_IDS = [id.strip() for id in ADMIN_CHAT_ID_RAW.split(',')] if ADMIN_CHAT_ID_RAW else []
 
 try:
     CHANNEL_ID = int(os.getenv("CHANNEL_ID")) 
@@ -78,10 +78,10 @@ except (TypeError, ValueError):
 
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
-if not all([BOT_TOKEN, ADMIN_CHAT_ID, CHANNEL_ID, BOT_USERNAME]):
+if not all([BOT_TOKEN, ADMIN_CHAT_IDS, CHANNEL_ID, BOT_USERNAME]):
     print("FATAL ERROR: One or more required environment variables are missing or invalid.")
     print(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-    print(f"ADMIN_CHAT_ID: {'✅' if ADMIN_CHAT_ID else '❌'}")
+    print(f"ADMIN_CHAT_IDS: {'✅' if ADMIN_CHAT_IDS else '❌'}")
     print(f"CHANNEL_ID: {'✅' if CHANNEL_ID else '❌'}")
     print(f"BOT_USERNAME: {'✅' if BOT_USERNAME else '❌'}")
     sys.exit(1)
@@ -137,7 +137,7 @@ def get_category_keyboard():
         [InlineKeyboardButton("Friendship", callback_data="cat_friendship")],
         [InlineKeyboardButton("Love & Relationships", callback_data="cat_relationship")],
         [InlineKeyboardButton("Regrets", callback_data="cat_secret")],
-        [InlineKeyboardButton("Achievements", callback_data="cat_general")], # Note: Mapped to 'general' in CATEGORY_MAP
+        [InlineKeyboardButton("Achievements", callback_data="cat_general")],
         [InlineKeyboardButton("Fear & Anxiety", callback_data="cat_vent")],
         [InlineKeyboardButton("Other", callback_data="cat_general")],
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_confess")]
@@ -213,7 +213,7 @@ def get_settings_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔔 Notifications", callback_data="settings_notifications")],
         [InlineKeyboardButton("🌙 Dark Mode", callback_data="settings_darkmode")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")] # Fixed: was 'back_main'
+        [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")]
     ])
 
 # --- Database Management ---
@@ -414,14 +414,15 @@ def escape_markdown_text(text):
 
 def format_channel_post(confession_id, category, confession_text):
     """Format channel post"""
-    # *** FIX: Escape user text to prevent Markdown parsing errors ***
+    # FIXED: Properly escape user text to prevent Markdown parsing errors
     safe_confession_text = escape_markdown_text(confession_text)
     
     comments_count = db.get_comments_count(confession_id)
     category_tag = f"#{category.replace(' ', '_').replace('&', 'and')}" 
     
+    # FIXED: Use proper Markdown escaping for confession ID
     return (
-        f"*Confession \#{confession_id}*\n\n"
+        f"*Confession #{confession_id}*\n\n"
         f"{safe_confession_text}\n\n"
         f"Category: {category_tag}\n"
         f"Comments: 💬 {comments_count}"
@@ -439,8 +440,9 @@ def format_browsing_confession(confession_data, index, total_confessions):
         
     comments_count = db.get_comments_count(confession_id)
     
+    # FIXED: Use proper Markdown escaping for confession ID
     return (
-        f"📝 *Confession \#{confession_id}* ({index + 1}/{total_confessions})\n\n"
+        f"📝 *Confession #{confession_id}* ({index + 1}/{total_confessions})\n\n"
         f"*{category}* - {date_str}\n\n"
         f"{text}\n\n"
         f"💬 Comments: {comments_count}"
@@ -448,7 +450,8 @@ def format_browsing_confession(confession_data, index, total_confessions):
 
 def format_comments_list(confession_id, comments_list):
     """Format comments list"""
-    header = f"💬 *Comments for Confession \#{confession_id}* ({len(comments_list)} total)\n\n"
+    # FIXED: Use proper Markdown escaping for confession ID
+    header = f"💬 *Comments for Confession #{confession_id}* ({len(comments_list)} total)\n\n"
     
     if not comments_list:
         return header + "No comments yet. Be the first one!"
@@ -656,23 +659,29 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.clear()
         return ConversationHandler.END
 
+    # FIXED: Use proper Markdown escaping for confession ID
     admin_message = (
-        f"🆕 *Confession \#*{confession_id} is *PENDING*\n\n"
+        f"🆕 *Confession #{confession_id} is PENDING*\n\n"
         f"👤 *User:* {username} (ID: {user_id})\n"
         f"📂 *Category:* {category}\n"
-        f"📝 *Text:* {escape_markdown_text(confession_text)}\n\n" # Escape for admin message too
+        f"📝 *Text:* {escape_markdown_text(confession_text)}\n\n"
         f"*Admin Action:*"
     )
     
     try:
-        logger.info(f"Attempting to send admin notification to Chat ID: {ADMIN_CHAT_ID}") 
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=admin_message,
-            reply_markup=get_admin_keyboard(confession_id), 
-            parse_mode='Markdown',
-            disable_web_page_preview=True
-        )
+        # Send to all admin IDs
+        for admin_id in ADMIN_CHAT_IDS:
+            try:
+                logger.info(f"Attempting to send admin notification to Chat ID: {admin_id}") 
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to send admin message to {admin_id}: {e}")
         
         await update.message.reply_text(
             "✅ *Confession Submitted!*\n\n"
@@ -682,7 +691,7 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         
     except Exception as e:
-        logger.error(f"Failed to send admin message to {ADMIN_CHAT_ID}: {e}")
+        logger.error(f"Failed to send admin messages: {e}")
         await update.message.reply_text(
             "❌ *Error sending admin notification.* The confession is saved but pending.",
             parse_mode='Markdown',
@@ -697,7 +706,9 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     
-    if str(query.from_user.id) not in ADMIN_CHAT_ID: 
+    # FIXED: Check if user is in admin list
+    user_id_str = str(query.from_user.id)
+    if user_id_str not in ADMIN_CHAT_IDS:
         await query.answer("❌ Only admins can perform this action.", show_alert=True)
         return
     
@@ -706,7 +717,8 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     
     confession = db.get_confession(confession_id)
     if not confession:
-        await query.edit_message_text(f"❌ Confession \#{confession_id} not found.")
+        # FIXED: Use proper Markdown escaping
+        await query.edit_message_text(f"❌ Confession #{confession_id} not found.")
         return
     
     user_id = confession[1]
@@ -757,7 +769,8 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=get_admin_keyboard(confession_id), # Keep keyboard
             parse_mode='Markdown'
         )
-        await query.answer(f"Confession \#{confession_id} set back to pending.") # Use an alert
+        # FIXED: Use proper Markdown escaping in alert
+        await query.answer(f"Confession #{confession_id} set back to pending.")
         return
 
     try:
@@ -766,9 +779,10 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.warning(f"Could not notify user {user_id}: {e}")
     
+    # FIXED: Use proper Markdown escaping
     await query.edit_message_text(
         f"{status_emoji} *Confession {status_text}!*\n\n"
-        f"Confession \#{confession_id} has been {status_text.lower()}.\n"
+        f"Confession #{confession_id} has been {status_text.lower()}.\n"
         f"User has been notified.",
         parse_mode='Markdown'
     )
@@ -1098,7 +1112,8 @@ def main():
             CommandHandler('start', start),
             CommandHandler('help', help_info_command),
             CallbackQueryHandler(main_menu, pattern='^main_menu$'),
-        ]
+        ],
+        per_message=False  # Explicitly set to avoid warning
     )
 
     application.add_handler(conv_handler)
@@ -1110,7 +1125,6 @@ def main():
     
     # Help command fallback
     application.add_handler(CommandHandler('help', help_info_command))
-
 
     print("🤖 Bot is polling...")
     application.run_polling()
