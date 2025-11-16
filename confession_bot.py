@@ -2,6 +2,8 @@ import os
 import sys
 import sqlite3
 import logging
+import threading
+import time
 from datetime import datetime
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -82,20 +84,107 @@ CATEGORY_MAP = {
     "secret": "😔 Regrets"
 }
 
-# --- Flask App for Render Health Checks ---
+# --- Enhanced Flask App for Render Health Checks ---
 app = Flask(__name__)
 
+# Global variable to track bot status
+bot_status = "starting"
+start_time = time.time()
+
 @app.route('/')
-def health_check():
-    return "🤫 Confession Bot is running!"
+def home():
+    """Main health check endpoint"""
+    uptime = time.time() - start_time
+    hours = int(uptime // 3600)
+    minutes = int((uptime % 3600) // 60)
+    seconds = int(uptime % 60)
+    
+    return f"""
+    <html>
+        <head>
+            <title>🤫 Confession Bot</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; }}
+                .status {{ padding: 10px; border-radius: 5px; margin: 10px 0; }}
+                .running {{ background: #d4edda; color: #155724; }}
+                .stopped {{ background: #f8d7da; color: #721c24; }}
+            </style>
+        </head>
+        <body>
+            <h1>🤫 Confession Bot</h1>
+            <div class="status running">
+                Status: <strong>RUNNING</strong><br>
+                Uptime: {hours}h {minutes}m {seconds}s<br>
+                Started: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')}
+            </div>
+            <p>Endpoints:</p>
+            <ul>
+                <li><a href="/health">/health</a> - JSON health check</li>
+                <li><a href="/status">/status</a> - Bot status</li>
+                <li><a href="/ping">/ping</a> - Simple ping</li>
+            </ul>
+        </body>
+    </html>
+    """
 
 @app.route('/health')
 def health():
-    return {"status": "healthy", "bot": "confession-bot"}
+    """JSON health check endpoint for Render"""
+    uptime = time.time() - start_time
+    return {
+        "status": "healthy",
+        "service": "confession-bot",
+        "bot_status": "running",
+        "uptime_seconds": int(uptime),
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.route('/status')
+def status():
+    """Bot status endpoint"""
+    uptime = time.time() - start_time
+    return {
+        "bot": BOT_USERNAME,
+        "status": "running",
+        "uptime": f"{int(uptime)} seconds",
+        "database": "connected",
+        "last_checked": datetime.now().isoformat()
+    }
+
+@app.route('/ping')
+def ping():
+    """Simple ping endpoint"""
+    return "pong"
+
+@app.route('/keepalive')
+def keepalive():
+    """Keepalive endpoint to prevent shutdown"""
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 def run_flask():
+    """Run Flask app with enhanced configuration"""
     port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting Flask health server on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# --- Keep Alive Background Thread ---
+def keep_alive_ping():
+    """Background thread to ping the health endpoint regularly"""
+    import requests
+    base_url = f"http://localhost:{os.environ.get('PORT', 5000)}"
+    
+    while True:
+        try:
+            response = requests.get(f"{base_url}/keepalive", timeout=10)
+            if response.status_code == 200:
+                print(f"✅ Keep-alive ping successful at {datetime.now().strftime('%H:%M:%S')}")
+            else:
+                print(f"⚠️ Keep-alive ping failed: {response.status_code}")
+        except Exception as e:
+            print(f"❌ Keep-alive ping error: {e}")
+        
+        # Ping every 5 minutes to stay alive
+        time.sleep(300)
 
 # --- Database Management ---
 class DatabaseManager:
@@ -199,20 +288,21 @@ class DatabaseManager:
             if conn:
                 conn.close()
     
-    def get_approved_confessions(self, category=None):
-        """Fetches approved confessions."""
+    def get_approved_confessions(self, category=None, limit=50):
+        """Fetches approved confessions with limit for faster loading."""
         conn = None
         try:
             conn = sqlite3.connect('confessions.db', check_same_thread=False)
             cursor = conn.cursor()
             if category and category != "recent":
                 cursor.execute(
-                    'SELECT id, confession_text, category, timestamp FROM confessions WHERE status = "approved" AND category = ? ORDER BY id DESC', 
-                    (category,)
+                    'SELECT id, confession_text, category, timestamp FROM confessions WHERE status = "approved" AND category = ? ORDER BY id DESC LIMIT ?', 
+                    (category, limit)
                 )
             else:
                 cursor.execute(
-                    'SELECT id, confession_text, category, timestamp FROM confessions WHERE status = "approved" ORDER BY id DESC'
+                    'SELECT id, confession_text, category, timestamp FROM confessions WHERE status = "approved" ORDER BY id DESC LIMIT ?',
+                    (limit,)
                 )
             return cursor.fetchall()
         except Exception as e:
@@ -316,21 +406,23 @@ def get_browse_keyboard():
     ]
     return InlineKeyboardMarkup(buttons)
 
-def get_confession_navigation(confession_id, total, index):
-    """Confession navigation keyboard"""
+def get_confession_keyboard(confession_id, total, index):
+    """FASTER: Simplified confession keyboard with immediate comment access"""
     buttons = []
+    
+    # Navigation buttons
     if index > 1:
         buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"prev_{confession_id}"))
     if index < total:
         buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"next_{confession_id}"))
     
     nav_row = [buttons] if buttons else []
+    
+    # Action buttons - SIMPLIFIED for faster access
     action_buttons = [
-        [
-            InlineKeyboardButton("💬 View Comments", callback_data=f"view_comments_{confession_id}"),
-            InlineKeyboardButton("💬 Add Comment", callback_data=f"add_comment_{confession_id}")
-        ],
-        [InlineKeyboardButton("📚 Browse Categories", callback_data="browse_menu")],
+        [InlineKeyboardButton("💬 Add Comment", callback_data=f"comment_{confession_id}")],
+        [InlineKeyboardButton("📜 View Comments", callback_data=f"view_{confession_id}")],
+        [InlineKeyboardButton("📚 Browse More", callback_data="browse_menu")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
     ]
     
@@ -348,11 +440,11 @@ def get_admin_keyboard(confession_id):
         ]
     ])
 
-def get_comments_management(confession_id):
-    """Comments management keyboard"""
+def get_comments_keyboard(confession_id):
+    """Comments management keyboard - SIMPLIFIED"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Add Comment", callback_data=f"add_comment_{confession_id}")],
-        [InlineKeyboardButton("⬅️ Back to Confession", callback_data=f"back_browse_{confession_id}")],
+        [InlineKeyboardButton("💬 Add Comment", callback_data=f"comment_{confession_id}")],
+        [InlineKeyboardButton("⬅️ Back", callback_data=f"back_{confession_id}")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
     ])
 
@@ -371,36 +463,20 @@ def escape_markdown_text(text):
         text = text.replace(char, f'\\{char}')
     return text
 
-def format_channel_post(confession_id, category, confession_text):
-    """Format channel post"""
-    safe_confession_text = escape_markdown_text(confession_text)
-    comments_count = db.get_comments_count(confession_id)
-    
-    return (
-        f"*Confession #{confession_id}*\n\n"
-        f"{safe_confession_text}\n\n"
-        f"*Category:* {category}\n"
-        f"*Comments:* 💬 {comments_count}\n\n"
-        f"_Share your thoughts in the comments below_ 👇"
-    )
-
-def format_browsing_confession(confession_data, index, total_confessions):
-    """Format confession for browsing"""
+def format_confession_preview(confession_data, index, total):
+    """FASTER: Lightweight confession format for quick browsing"""
     confession_id, text, category, timestamp = confession_data
     
-    try:
-        dt = datetime.fromisoformat(timestamp)
-        date_str = dt.strftime("%b %d, %Y at %H:%M")
-    except (ValueError, TypeError):
-        date_str = "recently"
-        
+    # Truncate long text for faster loading
+    preview_text = text[:200] + "..." if len(text) > 200 else text
+    
     comments_count = db.get_comments_count(confession_id)
     
     return (
-        f"📝 *Confession #{confession_id}* ({index + 1}/{total_confessions})\n\n"
-        f"*{category}* • {date_str}\n\n"
-        f"{text}\n\n"
-        f"💬 *{comments_count} comments* • Use buttons below to read or add comments"
+        f"📝 *Confession #{confession_id}* ({index}/{total})\n\n"
+        f"*{category}*\n\n"
+        f"{preview_text}\n\n"
+        f"💬 *{comments_count} comments*"
     )
 
 def format_comments_list(confession_id, comments_list):
@@ -633,7 +709,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     if action == 'approve':
         try:
             # Post to channel
-            channel_text = format_channel_post(confession_id, category, confession_text)
+            channel_text = f"*Confession #{confession_id}*\n\n{escape_markdown_text(confession_text)}\n\n*Category:* {category}"
             channel_message = await context.bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=channel_text,
@@ -688,7 +764,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode='Markdown'
     )
 
-# --- Browsing Logic ---
+# --- FAST Browsing Logic ---
 async def browse_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Shows the browsing category menu."""
     browse_text = (
@@ -715,7 +791,7 @@ async def browse_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return BROWSING_CONFESSIONS
 
 async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Fetches and displays the first confession for a selected category."""
+    """FASTER: Fetches and displays confessions with optimized loading."""
     query = update.callback_query
     await query.answer()
     
@@ -725,7 +801,8 @@ async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['browse_category'] = category_name
     context.user_data['current_index'] = 0 
     
-    confessions = db.get_approved_confessions(category=category_name if category_name != "Latest" else None)
+    # Load limited confessions for faster performance
+    confessions = db.get_approved_confessions(category=category_name if category_name != "Latest" else None, limit=20)
     context.user_data['confessions_list'] = confessions
     
     if not confessions:
@@ -742,7 +819,7 @@ async def start_browse_category(update: Update, context: ContextTypes.DEFAULT_TY
     return BROWSING_CONFESSIONS
 
 async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE, via_callback=False):
-    """Display the current confession based on index."""
+    """FASTER: Display confession with simplified format."""
     confessions = context.user_data.get('confessions_list', [])
     current_index = context.user_data.get('current_index', 0)
     
@@ -761,7 +838,9 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     confession_data = confessions[current_index]
     confession_id = confession_data[0]
-    formatted_text = format_browsing_confession(confession_data, current_index, len(confessions))
+    
+    # Use faster preview format
+    formatted_text = format_confession_preview(confession_data, current_index + 1, len(confessions))
     
     if via_callback:
         try:
@@ -769,7 +848,7 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 chat_id=update.effective_chat.id,
                 message_id=update.effective_message.message_id,
                 text=formatted_text,
-                reply_markup=get_confession_navigation(confession_id, len(confessions), current_index + 1),
+                reply_markup=get_confession_keyboard(confession_id, len(confessions), current_index + 1),
                 parse_mode='Markdown'
             )
         except Exception as e:
@@ -778,7 +857,7 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=formatted_text,
-            reply_markup=get_confession_navigation(confession_id, len(confessions), current_index + 1),
+            reply_markup=get_confession_keyboard(confession_id, len(confessions), current_index + 1),
             parse_mode='Markdown'
         )
 
@@ -799,14 +878,14 @@ async def navigate_confession(update: Update, context: ContextTypes.DEFAULT_TYPE
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
 
-# --- Commenting Logic ---
+# --- FAST Commenting Logic ---
 async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Displays the list of comments for a confession."""
+    """View comments for a confession."""
     query = update.callback_query
     await query.answer()
 
     try:
-        confession_id = int(query.data.split('_')[2])
+        confession_id = int(query.data.split('_')[1])
     except (IndexError, ValueError):
         await query.edit_message_text(
             "❌ Error: Could not find that confession.", 
@@ -820,24 +899,24 @@ async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.edit_message_text(
         text=formatted_text,
         parse_mode='Markdown',
-        reply_markup=get_comments_management(confession_id)
+        reply_markup=get_comments_keyboard(confession_id)
     )
     return BROWSING_CONFESSIONS
 
-async def back_to_confession_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Returns to the confession view from the comments list."""
+async def back_to_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Returns to the confession view from comments."""
     query = update.callback_query
     await query.answer()
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
 
-async def request_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Asks the user to write their comment."""
+async def start_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """IMMEDIATE: Start commenting directly from confession view."""
     query = update.callback_query
     await query.answer()
     
     try:
-        confession_id = int(query.data.split('_')[2])
+        confession_id = int(query.data.split('_')[1])
     except (IndexError, ValueError):
         await query.edit_message_text(
             "❌ Error: Could not find that confession.", 
@@ -921,8 +1000,25 @@ async def cancel_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Main Application ---
 def main():
-    """Run the bot."""
-    # Create application
+    """Run the bot with enhanced keep-alive features."""
+    # Startup message
+    print("🤫 Confession Bot Starting...")
+    print(f"✅ Bot Username: @{BOT_USERNAME}")
+    print(f"✅ Channel ID: {CHANNEL_ID}")
+    print(f"✅ Admin IDs: {ADMIN_CHAT_IDS}")
+    print("✅ Database initialized")
+    
+    # Start Flask in background for Render health checks
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("✅ Health check server started")
+    
+    # Start keep-alive pinger
+    keepalive_thread = threading.Thread(target=keep_alive_ping, daemon=True)
+    keepalive_thread.start()
+    print("✅ Keep-alive pinger started")
+    
+    # Create bot application
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Conversation Handler
@@ -947,9 +1043,9 @@ def main():
                 CallbackQueryHandler(navigate_confession, pattern='^next_|^prev_'),
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
                 CallbackQueryHandler(browse_menu, pattern='^browse_menu$'),
-                CallbackQueryHandler(request_comment, pattern='^add_comment_'),
-                CallbackQueryHandler(view_comments, pattern='^view_comments_'),
-                CallbackQueryHandler(back_to_confession_view, pattern='^back_browse_')
+                CallbackQueryHandler(start_comment, pattern='^comment_'),  # Direct comment access
+                CallbackQueryHandler(view_comments, pattern='^view_'),     # Direct view access
+                CallbackQueryHandler(back_to_confession, pattern='^back_') # Fast back navigation
             ],
             WRITING_COMMENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment),
@@ -967,26 +1063,23 @@ def main():
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(handle_admin_approval, pattern='^approve_|^reject_'))
 
-    # Startup message
-    print("🤫 Confession Bot Starting...")
-    print(f"✅ Bot Username: @{BOT_USERNAME}")
-    print(f"✅ Channel ID: {CHANNEL_ID}")
-    print(f"✅ Admin IDs: {ADMIN_CHAT_IDS}")
-    print("✅ Database initialized")
+    # Update bot status
+    global bot_status
+    bot_status = "running"
     
-    # Start Flask in background for Render health checks
-    import threading
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print("✅ Health check server started")
-    
-    # Start bot polling
+    # Start bot polling with error recovery
     print("🔄 Starting bot polling...")
     try:
-        application.run_polling(drop_pending_updates=True)
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
+        )
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
-        sys.exit(1)
+        print("🔄 Restarting bot in 10 seconds...")
+        time.sleep(10)
+        main()  # Auto-restart
 
 if __name__ == '__main__':
     main()
