@@ -404,14 +404,25 @@ class DatabaseManager:
 db = DatabaseManager()
 
 # --- Helper Functions ---
+def escape_markdown_text(text):
+    """Escape special characters in user-provided text for Telegram MarkdownV2."""
+    # Escape characters required for MarkdownV2: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    escape_chars = r'_*[]()`>#+-.!|{}=~-'
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 def format_channel_post(confession_id, category, confession_text):
     """Format channel post"""
+    # *** FIX: Escape user text to prevent Markdown parsing errors ***
+    safe_confession_text = escape_markdown_text(confession_text)
+    
     comments_count = db.get_comments_count(confession_id)
     category_tag = f"#{category.replace(' ', '_').replace('&', 'and')}" 
     
     return (
-        f"*Confession #{confession_id}*\n\n"
-        f"{confession_text}\n\n"
+        f"*Confession \#{confession_id}*\n\n"
+        f"{safe_confession_text}\n\n"
         f"Category: {category_tag}\n"
         f"Comments: 💬 {comments_count}"
     )
@@ -429,7 +440,7 @@ def format_browsing_confession(confession_data, index, total_confessions):
     comments_count = db.get_comments_count(confession_id)
     
     return (
-        f"📝 *Confession #{confession_id}* ({index + 1}/{total_confessions})\n\n"
+        f"📝 *Confession \#{confession_id}* ({index + 1}/{total_confessions})\n\n"
         f"*{category}* - {date_str}\n\n"
         f"{text}\n\n"
         f"💬 Comments: {comments_count}"
@@ -437,7 +448,7 @@ def format_browsing_confession(confession_data, index, total_confessions):
 
 def format_comments_list(confession_id, comments_list):
     """Format comments list"""
-    header = f"💬 *Comments for Confession #{confession_id}* ({len(comments_list)} total)\n\n"
+    header = f"💬 *Comments for Confession \#{confession_id}* ({len(comments_list)} total)\n\n"
     
     if not comments_list:
         return header + "No comments yet. Be the first one!"
@@ -445,6 +456,9 @@ def format_comments_list(confession_id, comments_list):
     comment_blocks = []
     
     for i, (username, text, timestamp) in enumerate(comments_list):
+        # Escape comment text for safety
+        safe_comment_text = escape_markdown_text(text)
+        
         anon_name = f"User {i+1}"
         
         time_str = ""
@@ -454,7 +468,7 @@ def format_comments_list(confession_id, comments_list):
         except Exception:
             time_str = "recently"
 
-        comment_blocks.append(f"👤 *{anon_name}* ({time_str}):\n» {text}\n")
+        comment_blocks.append(f"👤 *{anon_name}* ({time_str}):\n» {safe_comment_text}\n")
             
     return header + "\n---\n".join(comment_blocks)
 
@@ -643,10 +657,10 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     admin_message = (
-        f"🆕 *Confession #*{confession_id} is *PENDING*\n\n"
+        f"🆕 *Confession \#*{confession_id} is *PENDING*\n\n"
         f"👤 *User:* {username} (ID: {user_id})\n"
         f"📂 *Category:* {category}\n"
-        f"📝 *Text:* {confession_text}\n\n"
+        f"📝 *Text:* {escape_markdown_text(confession_text)}\n\n" # Escape for admin message too
         f"*Admin Action:*"
     )
     
@@ -692,7 +706,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     
     confession = db.get_confession(confession_id)
     if not confession:
-        await query.edit_message_text(f"❌ Confession #{confession_id} not found.")
+        await query.edit_message_text(f"❌ Confession \#{confession_id} not found.")
         return
     
     user_id = confession[1]
@@ -743,7 +757,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=get_admin_keyboard(confession_id), # Keep keyboard
             parse_mode='Markdown'
         )
-        await query.answer(f"Confession #{confession_id} set back to pending.") # Use an alert
+        await query.answer(f"Confession \#{confession_id} set back to pending.") # Use an alert
         return
 
     try:
@@ -754,7 +768,7 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
     
     await query.edit_message_text(
         f"{status_emoji} *Confession {status_text}!*\n\n"
-        f"Confession #{confession_id} has been {status_text.lower()}.\n"
+        f"Confession \#{confession_id} has been {status_text.lower()}.\n"
         f"User has been notified.",
         parse_mode='Markdown'
     )
@@ -884,7 +898,7 @@ async def navigate_confession(update: Update, context: ContextTypes.DEFAULT_TYPE
     await display_confession(update, context, via_callback=True)
     return BROWSING_CONFESSIONS
 
-# --- [NEW] Commenting Logic ---
+# --- Commenting Logic ---
 
 async def view_comments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Displays the list of comments for a confession."""
@@ -1005,7 +1019,7 @@ async def cancel_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- [NEW] Simple Info Handlers ---
+# --- Simple Info Handlers ---
 
 async def help_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays the help text from an inline button."""
@@ -1038,7 +1052,7 @@ async def help_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# --- [NEW] Main Bot Execution ---
+# --- Main Bot Execution ---
 
 def main():
     """Run the bot."""
@@ -1071,7 +1085,6 @@ def main():
                 CallbackQueryHandler(main_menu, pattern='^main_menu$'),
                 CallbackQueryHandler(browse_menu, pattern='^browse_menu$'),
                 
-                # --- THE FIX ---
                 CallbackQueryHandler(request_comment, pattern='^add_comment_'),
                 CallbackQueryHandler(view_comments, pattern='^view_comments_'),
                 CallbackQueryHandler(back_to_confession_view, pattern='^back_browse_')
