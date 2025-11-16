@@ -21,7 +21,8 @@ load_dotenv()
 
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_IDS = [id.strip() for id in os.getenv("ADMIN_CHAT_ID", "").split(',') if id.strip()]
+ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID", "")
+ADMIN_CHAT_IDS = [id.strip() for id in ADMIN_CHAT_ID_RAW.split(',') if id.strip()] if ADMIN_CHAT_ID_RAW else []
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 
