@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: wu-bot
+    name: confession-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -14,8 +14,3 @@ services:
         sync: false
       - key: BOT_USERNAME
         sync: false
-      - key: RENDER_EXTERNAL_URL
-        fromService:
-          type: web
-          name: wu-bot
-          property: url
