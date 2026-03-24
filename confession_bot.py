@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 HELP_TEXT = """
 🤫 *Confession Bot*
 
-*💌 Submit Confession*: Share your anonymous confession (10-1000 characters)
+*💌 Submit Confession*: Share your anonymous confession (text, photo, voice, video, etc.)
 *📖 Browse Confessions*: Read approved confessions by category  
 *💬 Comment System*: Discuss confessions anonymously
 *👮 Admin Review*: All confessions are reviewed before posting
@@ -59,7 +59,7 @@ HELP_TEXT = """
 
 *How to Use:*
 1. Click *💌 Submit Confession* to share your thoughts
-2. Choose a category and write your confession
+2. Choose a category and submit your confession (text or media)
 3. Wait for admin approval
 4. Browse approved confessions using *📖 Browse Confessions*
 5. Add comments to discuss confessions
@@ -160,6 +160,9 @@ class DatabaseManager:
                     username TEXT,
                     category TEXT,
                     confession_text TEXT,
+                    media_type TEXT DEFAULT 'text',
+                    media_file_id TEXT,
+                    media_caption TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     status TEXT DEFAULT 'pending',
                     channel_message_id INTEGER
@@ -191,10 +194,10 @@ class DatabaseManager:
     # (Your original CRUD methods: save_confession, update_confession_status, 
     # get_confession, get_approved_confessions, save_comment, get_comments, get_comments_count)
     
-    def save_confession(self, user_id, username, category, confession_text):
+    def save_confession(self, user_id, username, category, confession_text, media_type='text', media_file_id=None, media_caption=None):
         conn = sqlite3.connect('confessions.db', check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO confessions (user_id, username, category, confession_text) VALUES (?, ?, ?, ?)', (user_id, username, category, confession_text))
+        cursor.execute('INSERT INTO confessions (user_id, username, category, confession_text, media_type, media_file_id, media_caption) VALUES (?, ?, ?, ?, ?, ?, ?)', (user_id, username, category, confession_text, media_type, media_file_id, media_caption))
         confession_id = cursor.lastrowid
         conn.commit()
         conn.close()
@@ -222,9 +225,9 @@ class DatabaseManager:
         conn = sqlite3.connect('confessions.db', check_same_thread=False)
         cursor = conn.cursor()
         if category and category != "recent":
-            cursor.execute('SELECT id, confession_text, category, timestamp FROM confessions WHERE status = "approved" AND category = ? ORDER BY id DESC LIMIT ?', (category, limit))
+            cursor.execute('SELECT id, confession_text, category, timestamp, media_type, media_file_id, media_caption FROM confessions WHERE status = "approved" AND category = ? ORDER BY id DESC LIMIT ?', (category, limit))
         else:
-            cursor.execute('SELECT id, confession_text, category, timestamp FROM confessions WHERE status = "approved" ORDER BY id DESC LIMIT ?', (limit,))
+            cursor.execute('SELECT id, confession_text, category, timestamp, media_type, media_file_id, media_caption FROM confessions WHERE status = "approved" ORDER BY id DESC LIMIT ?', (limit,))
         result = cursor.fetchall()
         conn.close()
         return result
@@ -447,14 +450,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 confession_id = int(payload.split('_')[1])
                 confession = db.get_confession(confession_id)
                 
-                if confession and confession[6] == 'approved':
-                    # Confession data is (id, text, db_category, timestamp)
-                    confession_data = (confession[0], confession[4], CATEGORY_MAP.get(confession[3], confession[3]), confession[5]) 
+                if confession and confession[9] == 'approved':  # status is index 9 now
+                    # Confession data: (id, text, db_category, timestamp, media_type, media_file_id, media_caption)
+                    confession_data = (confession[0], confession[4], CATEGORY_MAP.get(confession[3], confession[3]), confession[8], confession[5], confession[6], confession[7]) 
+                    formatted_text = format_discussion_welcome(confession_id, confession_data)
+                    keyboard = get_confession_discussion_keyboard(confession_id)
+                    
                     await update.message.reply_text(
-                        format_discussion_welcome(confession_id, confession_data),
+                        formatted_text,
                         parse_mode='Markdown',
-                        reply_markup=get_confession_discussion_keyboard(confession_id)
+                        reply_markup=keyboard
                     )
+                    # Send media if present
+                    media_type = confession[5]
+                    media_file_id = confession[6]
+                    media_caption = confession[7]
+                    if media_type != 'text' and media_file_id:
+                        if media_type == 'photo':
+                            await update.message.reply_photo(photo=media_file_id, caption=media_caption or "")
+                        elif media_type == 'voice':
+                            await update.message.reply_voice(voice=media_file_id, caption=media_caption or "")
+                        elif media_type == 'video':
+                            await update.message.reply_video(video=media_file_id, caption=media_caption or "")
+                        elif media_type == 'document':
+                            await update.message.reply_document(document=media_file_id, caption=media_caption or "")
+                        elif media_type == 'audio':
+                            await update.message.reply_audio(audio=media_file_id, caption=media_caption or "")
+                    
                     return BROWSING_CONFESSIONS
             except (IndexError, ValueError, Exception) as e:
                 logger.error(f"Error handling deep link: {e}")
@@ -530,9 +552,15 @@ async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     await query.edit_message_text(
         f"✅ *Category Selected:* {display_category}\n\n"
-        "📝 *Now write your confession:*\n\n"
-        "Please type your confession below:\n"
-        "• 10-1000 characters\n"
+        "📝 *Now submit your confession:*\n\n"
+        "You can send:\n"
+        "• Text message\n"
+        "• Photo with optional caption\n"
+        "• Voice message\n"
+        "• Video\n"
+        "• Document\n"
+        "• Audio file\n\n"
+        "Caption/text: 0-1000 characters\n"
         "• Be respectful\n"
         "• No personal information\n\n"
         "Your confession will be reviewed by admins before posting.",
@@ -544,21 +572,62 @@ async def select_category(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.first_name or "Anonymous"
-    confession_text = update.message.text.strip()
-    # Get the database key
+    message = update.message
     db_category = context.user_data.get('db_category', 'general') 
     display_category = CATEGORY_MAP.get(db_category, '🌟 Other')
 
-    # Validation
-    if not (10 <= len(confession_text) <= 1000):
+    media_type = 'text'
+    media_file_id = None
+    media_caption = None
+    confession_text = ""
+
+    if message.text:
+        confession_text = message.text.strip()
+        media_type = 'text'
+    elif message.photo:
+        # Get the highest resolution photo
+        photo = message.photo[-1]
+        media_file_id = photo.file_id
+        media_type = 'photo'
+        media_caption = message.caption or ""
+        confession_text = media_caption  # Use caption as text if present
+    elif message.voice:
+        media_file_id = message.voice.file_id
+        media_type = 'voice'
+        media_caption = message.caption or ""
+        confession_text = media_caption
+    elif message.video:
+        media_file_id = message.video.file_id
+        media_type = 'video'
+        media_caption = message.caption or ""
+        confession_text = media_caption
+    elif message.document:
+        media_file_id = message.document.file_id
+        media_type = 'document'
+        media_caption = message.caption or ""
+        confession_text = media_caption
+    elif message.audio:
+        media_file_id = message.audio.file_id
+        media_type = 'audio'
+        media_caption = message.caption or ""
+        confession_text = media_caption
+    else:
         await update.message.reply_text(
-            f"❌ *Length Error!* Your confession must be between 10 and 1000 characters (Yours: {len(confession_text)}).\n\nTry again:",
+            "❌ *Unsupported media type.* Please send text, photo, voice, video, document, or audio.",
             parse_mode='Markdown'
         )
         return WRITING_CONFESSION
-    
-    # Save confession using the database key
-    confession_id = db.save_confession(user_id, username, db_category, confession_text)
+
+    # Validation for text length if present
+    if confession_text and not (0 <= len(confession_text) <= 1000):
+        await update.message.reply_text(
+            f"❌ *Length Error!* Caption/text must be 0-1000 characters (Yours: {len(confession_text)}).\n\nTry again:",
+            parse_mode='Markdown'
+        )
+        return WRITING_CONFESSION
+
+    # Save confession
+    confession_id = db.save_confession(user_id, username, db_category, confession_text, media_type, media_file_id, media_caption)
     
     if not confession_id:
         await update.message.reply_text("❌ *Error submitting confession.* Please try again later.", parse_mode='Markdown', reply_markup=get_main_keyboard())
@@ -570,20 +639,66 @@ async def receive_confession(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🆕 *New Confession Pending Review* #{confession_id}\n\n"
         f"👤 *User:* {username} (ID: {user_id})\n"
         f"📂 *Category:* {display_category}\n"
-        f"📝 *Confession:* {escape_markdown_text(confession_text)}\n\n"
-        f"*Please review this confession:*"
+        f"📝 *Type:* {media_type}\n"
     )
-    
+    if confession_text:
+        admin_message += f"📝 *Text:* {escape_markdown_text(confession_text)}\n\n"
+    else:
+        admin_message += "\n"
+
+    admin_message += "*Please review this confession:*"
+
     # Send to all admins
     for admin_id in ADMIN_CHAT_IDS:
         try:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=admin_message,
-                reply_markup=get_admin_keyboard(confession_id), 
-                parse_mode='Markdown',
-                disable_web_page_preview=True
-            )
+            if media_type == 'text':
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+            elif media_type == 'photo':
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=media_file_id,
+                    caption=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'voice':
+                await context.bot.send_voice(
+                    chat_id=admin_id,
+                    voice=media_file_id,
+                    caption=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'video':
+                await context.bot.send_video(
+                    chat_id=admin_id,
+                    video=media_file_id,
+                    caption=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'document':
+                await context.bot.send_document(
+                    chat_id=admin_id,
+                    document=media_file_id,
+                    caption=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'audio':
+                await context.bot.send_audio(
+                    chat_id=admin_id,
+                    audio=media_file_id,
+                    caption=admin_message,
+                    reply_markup=get_admin_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
         except Exception as e:
             logger.error(f"Failed to send admin message to {admin_id}: {e}")
             
@@ -628,22 +743,75 @@ async def handle_admin_approval(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(f"❌ Confession #{confession_id} not found or already processed.")
         return
     
-    # Unpack confession: (id, user_id, username, category_key, text, timestamp, status, channel_msg_id)
+    # Unpack confession: (id, user_id, username, category_key, text, media_type, media_file_id, media_caption, timestamp, status, channel_msg_id)
     submitter_user_id = confession[1]
     category_key = confession[3]
     confession_text = confession[4]
+    media_type = confession[5]
+    media_file_id = confession[6]
+    media_caption = confession[7]
     display_category = CATEGORY_MAP.get(category_key, '🌟 Other')
     
     if action == 'approve':
         try:
             # Post to channel
-            channel_text = format_channel_post(confession_id, display_category, confession_text)
-            channel_message = await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_text,
-                reply_markup=get_channel_post_keyboard(confession_id), 
-                parse_mode='Markdown'
-            )
+            channel_text = format_channel_post(confession_id, display_category, confession_text or media_caption or "")
+            
+            if media_type == 'text':
+                channel_message = await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'photo':
+                channel_message = await context.bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=media_file_id,
+                    caption=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'voice':
+                channel_message = await context.bot.send_voice(
+                    chat_id=CHANNEL_ID,
+                    voice=media_file_id,
+                    caption=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'video':
+                channel_message = await context.bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=media_file_id,
+                    caption=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'document':
+                channel_message = await context.bot.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=media_file_id,
+                    caption=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            elif media_type == 'audio':
+                channel_message = await context.bot.send_audio(
+                    chat_id=CHANNEL_ID,
+                    audio=media_file_id,
+                    caption=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
+            else:
+                # Fallback to text
+                channel_message = await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=channel_text,
+                    reply_markup=get_channel_post_keyboard(confession_id), 
+                    parse_mode='Markdown'
+                )
             
             # Update database with new status and channel message ID
             db.update_confession_status(confession_id, 'approved', channel_message.message_id)
@@ -730,24 +898,66 @@ async def display_confession(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     context.user_data['current_index'] = index
     
-    # Data is: (id, text, db_category, timestamp)
+    # Data is: (id, text, db_category, timestamp, media_type, media_file_id, media_caption)
     raw_data = confessions[index] 
     
     # Convert DB category key to display name for formatting
     display_category = CATEGORY_MAP.get(raw_data[2], '🌟 Other') 
-    confession_data = (raw_data[0], raw_data[1], display_category, raw_data[3])
+    confession_data = (raw_data[0], raw_data[1], display_category, raw_data[3], raw_data[4], raw_data[5], raw_data[6])
     confession_id = raw_data[0]
+    media_type = raw_data[4]
+    media_file_id = raw_data[5]
+    media_caption = raw_data[6]
     
     formatted_text = format_confession_full(confession_data, index + 1, total)
     keyboard = get_confession_browse_keyboard(confession_id, total, index + 1)
     
     try:
         if update.callback_query:
-            await update.callback_query.edit_message_text(
-                formatted_text,
-                reply_markup=keyboard,
-                parse_mode='Markdown'
-            )
+            if media_type == 'text':
+                await update.callback_query.edit_message_text(
+                    formatted_text,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+            else:
+                # For media, send as new message since edit can't change media
+                await update.callback_query.message.reply_text(
+                    formatted_text,
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+                # Send media separately
+                if media_type == 'photo':
+                    await update.callback_query.message.reply_photo(
+                        photo=media_file_id,
+                        caption=media_caption or "",
+                        reply_markup=keyboard
+                    )
+                elif media_type == 'voice':
+                    await update.callback_query.message.reply_voice(
+                        voice=media_file_id,
+                        caption=media_caption or "",
+                        reply_markup=keyboard
+                    )
+                elif media_type == 'video':
+                    await update.callback_query.message.reply_video(
+                        video=media_file_id,
+                        caption=media_caption or "",
+                        reply_markup=keyboard
+                    )
+                elif media_type == 'document':
+                    await update.callback_query.message.reply_document(
+                        document=media_file_id,
+                        caption=media_caption or "",
+                        reply_markup=keyboard
+                    )
+                elif media_type == 'audio':
+                    await update.callback_query.message.reply_audio(
+                        audio=media_file_id,
+                        caption=media_caption or "",
+                        reply_markup=keyboard
+                    )
         else: # Used for deep links or initial command response if needed
              await update.message.reply_text(
                 formatted_text,
@@ -839,17 +1049,34 @@ async def handle_back_to_confession(update: Update, context: ContextTypes.DEFAUL
     else:
         # Fallback for deep links or expired session
         confession = db.get_confession(confession_id)
-        if confession and confession[6] == 'approved':
-            # Data: (id, text, db_category, timestamp)
+        if confession and confession[9] == 'approved':
+            # Data: (id, text, db_category, timestamp, media_type, media_file_id, media_caption)
             display_category = CATEGORY_MAP.get(confession[3], confession[3])
-            confession_data = (confession[0], confession[4], display_category, confession[5])
+            confession_data = (confession[0], confession[4], display_category, confession[8], confession[5], confession[6], confession[7])
             
             formatted_text = format_discussion_welcome(confession_id, confession_data)
+            keyboard = get_confession_discussion_keyboard(confession_id)
+            
             await query.edit_message_text(
                 formatted_text,
-                reply_markup=get_confession_discussion_keyboard(confession_id),
+                reply_markup=keyboard,
                 parse_mode='Markdown'
             )
+            # Send media
+            media_type = confession[5]
+            media_file_id = confession[6]
+            media_caption = confession[7]
+            if media_type != 'text' and media_file_id:
+                if media_type == 'photo':
+                    await query.message.reply_photo(photo=media_file_id, caption=media_caption or "")
+                elif media_type == 'voice':
+                    await query.message.reply_voice(voice=media_file_id, caption=media_caption or "")
+                elif media_type == 'video':
+                    await query.message.reply_video(video=media_file_id, caption=media_caption or "")
+                elif media_type == 'document':
+                    await query.message.reply_document(document=media_file_id, caption=media_caption or "")
+                elif media_type == 'audio':
+                    await query.message.reply_audio(audio=media_file_id, caption=media_caption or "")
         else:
             await query.edit_message_text(
                 f"❌ Confession #{confession_id} not available.",
@@ -975,7 +1202,7 @@ def main() -> None:
                 CallbackQueryHandler(select_category, pattern="^cat_"),
                 CallbackQueryHandler(cancel_confession, pattern="^cancel_confess$")
             ],
-            WRITING_CONFESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_confession)],
+            WRITING_CONFESSION: [MessageHandler((filters.TEXT | filters.PHOTO | filters.VOICE | filters.VIDEO | filters.DOCUMENT | filters.AUDIO) & ~filters.COMMAND, receive_confession)],
         },
         fallbacks=[
             CallbackQueryHandler(main_menu, pattern="^main_menu$"),
